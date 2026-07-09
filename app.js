@@ -2,7 +2,7 @@
 // FILL THESE IN with your own Supabase project's values
 // (Supabase dashboard -> Project Settings -> API)
 // ============================================================
-const SUPABASE_URL = "https://YOUR-PROJECT-REF.supabase.co";
+const SUPABASE_URL = "https://bcrpgxeppwbqcgbzpejv.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_Vmut8s10TieMWXXCjnzj1A_t3I7euYR";
 
 const CAT_COLORS = {
