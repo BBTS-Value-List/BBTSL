@@ -28,6 +28,7 @@ const TOTP_PERIOD_SECONDS = 30;
 const TOTP_WINDOW_STEPS = 1;
 const MAX_EDIT_VALUE = 10_000_000;
 const MAX_IMAGE_BYTES = 3 * 1024 * 1024;
+const DIRECT_IMAGE_READ_LIMIT = 512 * 1024;
 const SESSION_LIFETIME_SECONDS = 60 * 60 * 12;
 const OWNER_HEADER = "x-owner-key";
 const APP_REQUEST_HEADER = "x-bbts-request";
@@ -67,6 +68,10 @@ export default {
 
       if (url.pathname === "/api/owner/totp" && request.method === "POST") {
         return withSecurityHeaders(await requireOwner(request, env, () => handleOwnerTotpSet(request, env)));
+      }
+
+      if (url.pathname === "/api/owner/images/import" && request.method === "POST") {
+        return withSecurityHeaders(await requireOwner(request, env, () => handleOwnerImageImport(request, env)));
       }
 
       if (url.pathname === "/api/swords" && request.method === "GET") {
@@ -264,6 +269,24 @@ async function handleOwnerTotpSet(request, env) {
   return json(buildTotpProvisioningResponse(config));
 }
 
+async function handleOwnerImageImport(request, env) {
+  const body = await request.json().catch(() => null);
+  const items = Array.isArray(body?.items)
+    ? body.items
+    : [{ key: body?.key, dataUrl: body?.dataUrl }];
+
+  if (items.length === 0) {
+    throw new HttpError(400, "At least one image import item is required.");
+  }
+
+  for (const item of items) {
+    const imageKey = requireImageKey(item?.key);
+    await importImageRecord(env, imageKey, item?.dataUrl);
+  }
+
+  return json({ ok: true, imported: items.length });
+}
+
 async function handleListSwords(env, url) {
   const category = url.searchParams.get("category");
   const search = (url.searchParams.get("search") || "").trim().toLowerCase();
@@ -374,10 +397,6 @@ async function handleDeleteSword(env, id) {
   }
 
   await env.DB.prepare("DELETE FROM swords WHERE id = ?").bind(id).run();
-  if (existing.image_key) {
-    await env.SWORD_IMAGES.delete(existing.image_key);
-  }
-
   return json({ ok: true });
 }
 
@@ -413,22 +432,46 @@ async function handleGetImage(request, env, key) {
     return env.ASSETS.fetch(new Request(new URL("/images/unavailable.webp", request.url), request));
   }
 
-  const object = await env.SWORD_IMAGES.get(key);
-  if (!object) {
-    return new Response("Not found.", { status: 404 });
+  const row = await env.DB.prepare(`
+    SELECT content_type, length(image_data) AS image_size
+    FROM sword_images
+    WHERE image_key = ?
+  `).bind(key).first();
+
+  if (!row) {
+    return env.ASSETS.fetch(new Request(new URL("/images/unavailable.webp", request.url), request));
+  }
+
+  const imageSize = Number(row.image_size || 0);
+  let imageBody = null;
+  if (imageSize > 0 && imageSize <= DIRECT_IMAGE_READ_LIMIT) {
+    const bodyRow = await env.DB.prepare(`
+      SELECT image_data
+      FROM sword_images
+      WHERE image_key = ?
+    `).bind(key).first();
+
+    imageBody = await readImageBody(bodyRow?.image_data);
+  }
+
+  if (!imageBody?.byteLength) {
+    imageBody = await readImageBodyFromChunks(env, key, imageSize);
+  }
+
+  if (!imageBody?.byteLength) {
+    return env.ASSETS.fetch(new Request(new URL("/images/unavailable.webp", request.url), request));
   }
 
   const headers = new Headers();
-  object.writeHttpMetadata(headers);
-  const contentType = (headers.get("content-type") || "").toLowerCase();
-  headers.set("etag", object.httpEtag);
+  const contentType = String(row.content_type || "").toLowerCase();
+  headers.set("content-type", contentType || "application/octet-stream");
   headers.set("cache-control", "public, max-age=31536000, immutable");
   headers.set("x-content-type-options", HTML_SECURITY_HEADERS["x-content-type-options"]);
   if (contentType === "image/svg+xml" || key.toLowerCase().endsWith(".svg")) {
     headers.set("content-disposition", `attachment; filename="${key.split("/").pop() || "image.svg"}"`);
     headers.set("content-security-policy", "default-src 'none'; sandbox");
   }
-  return new Response(object.body, { headers });
+  return new Response(imageBody, { headers });
 }
 
 async function requireEditor(request, env, fn) {
@@ -757,9 +800,6 @@ function base64UrlDecode(value) {
 
 async function persistImage(env, imageInput, currentKey, swordName) {
   if (imageInput === null) {
-    if (currentKey) {
-      await env.SWORD_IMAGES.delete(currentKey);
-    }
     return { imageKey: null };
   }
 
@@ -773,17 +813,38 @@ async function persistImage(env, imageInput, currentKey, swordName) {
   }
 
   const nextKey = buildImageKey(swordName, parsed.extension);
-  await env.SWORD_IMAGES.put(nextKey, parsed.bytes, {
-    httpMetadata: {
-      contentType: parsed.contentType
-    }
-  });
-
-  if (currentKey && currentKey !== nextKey) {
-    await env.SWORD_IMAGES.delete(currentKey);
-  }
+  await upsertImageRecord(env, nextKey, parsed.contentType, parsed.bytes);
 
   return { imageKey: nextKey };
+}
+
+async function importImageRecord(env, imageKey, imageDataUrl) {
+  if (typeof imageDataUrl !== "string") {
+    throw new HttpError(400, "Image payload is invalid.");
+  }
+
+  const parsed = parseDataUrl(imageDataUrl);
+  if (parsed.bytes.byteLength > MAX_IMAGE_BYTES) {
+    throw new HttpError(413, "Image is too large.");
+  }
+
+  await upsertImageRecord(env, imageKey, parsed.contentType, parsed.bytes);
+}
+
+async function upsertImageRecord(env, imageKey, contentType, bytes) {
+  await env.DB.prepare(`
+    INSERT INTO sword_images (image_key, content_type, image_data, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(image_key) DO UPDATE SET
+      content_type = excluded.content_type,
+      image_data = excluded.image_data,
+      updated_at = excluded.updated_at
+  `).bind(
+    imageKey,
+    contentType,
+    bytes,
+    currentIsoString()
+  ).run();
 }
 
 function parseDataUrl(input) {
@@ -829,6 +890,107 @@ function buildImageKey(swordName, extension) {
     .replace(/^-+|-+$/g, "")
     .slice(0, 48) || "sword";
   return `swords/${slug}-${crypto.randomUUID()}.${extension}`;
+}
+
+function requireImageKey(value) {
+  if (typeof value !== "string") {
+    throw new HttpError(400, "Image key is invalid.");
+  }
+
+  const normalized = value.trim().slice(0, 512);
+  if (!normalized) {
+    throw new HttpError(400, "Image key is invalid.");
+  }
+
+  return normalized;
+}
+
+function normalizeBlobBody(value) {
+  if (value instanceof ArrayBuffer || value instanceof Uint8Array) {
+    return value;
+  }
+
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
+
+  if (Array.isArray(value)) {
+    return Uint8Array.from(value);
+  }
+
+  if (value?.buffer instanceof ArrayBuffer) {
+    const byteOffset = Number(value.byteOffset || 0);
+    const byteLength = Number(value.byteLength || value.buffer.byteLength || 0);
+    return new Uint8Array(value.buffer, byteOffset, byteLength);
+  }
+
+  if (value && typeof value === "object") {
+    const numericKeys = Object.keys(value)
+      .filter((key) => /^\d+$/.test(key))
+      .sort((left, right) => Number(left) - Number(right));
+
+    if (numericKeys.length > 0) {
+      return Uint8Array.from(numericKeys.map((key) => Number(value[key]) || 0));
+    }
+  }
+
+  return value;
+}
+
+async function readImageBody(value) {
+  if (typeof Blob !== "undefined" && value instanceof Blob) {
+    return new Uint8Array(await value.arrayBuffer());
+  }
+
+  const normalized = normalizeBlobBody(value);
+  if (normalized instanceof Uint8Array) {
+    return normalized;
+  }
+
+  if (normalized instanceof ArrayBuffer) {
+    return new Uint8Array(normalized);
+  }
+
+  return null;
+}
+
+async function readImageBodyFromChunks(env, key, imageSize) {
+  if (!Number.isFinite(imageSize) || imageSize <= 0) {
+    return null;
+  }
+
+  const chunkSize = 262144;
+  const bytes = new Uint8Array(imageSize);
+
+  for (let offset = 0; offset < imageSize; offset += chunkSize) {
+    const length = Math.min(chunkSize, imageSize - offset);
+    const row = await env.DB.prepare(`
+      SELECT hex(substr(image_data, ?, ?)) AS image_hex
+      FROM sword_images
+      WHERE image_key = ?
+    `).bind(offset + 1, length, key).first();
+
+    const chunk = hexToBytes(row?.image_hex);
+    if (chunk.byteLength !== length) {
+      return null;
+    }
+
+    bytes.set(chunk, offset);
+  }
+
+  return bytes;
+}
+
+function hexToBytes(value) {
+  if (typeof value !== "string" || value.length === 0 || value.length % 2 !== 0) {
+    return new Uint8Array();
+  }
+
+  const bytes = new Uint8Array(value.length / 2);
+  for (let index = 0; index < value.length; index += 2) {
+    bytes[index / 2] = Number.parseInt(value.slice(index, index + 2), 16);
+  }
+  return bytes;
 }
 
 function serializeSword(row) {
@@ -1143,6 +1305,12 @@ async function ensureCoreSchema(env) {
           image_key TEXT,
           edited INTEGER NOT NULL DEFAULT 0 CHECK (edited IN (0, 1))
         )`,
+        `CREATE TABLE IF NOT EXISTS sword_images (
+          image_key TEXT PRIMARY KEY,
+          content_type TEXT NOT NULL,
+          image_data BLOB NOT NULL,
+          updated_at TEXT NOT NULL
+        )`,
         `CREATE TABLE IF NOT EXISTS admin_config (
           config_key TEXT PRIMARY KEY,
           secret TEXT NOT NULL,
@@ -1162,6 +1330,7 @@ async function ensureCoreSchema(env) {
         "CREATE INDEX IF NOT EXISTS idx_swords_category ON swords (c)",
         "CREATE INDEX IF NOT EXISTS idx_swords_value ON swords (v DESC)",
         "CREATE INDEX IF NOT EXISTS idx_sword_baseline_category ON sword_baseline (c)",
+        "CREATE INDEX IF NOT EXISTS idx_sword_images_updated_at ON sword_images (updated_at)",
         "CREATE INDEX IF NOT EXISTS idx_rate_limits_window_start ON rate_limits (window_start)"
       ];
 

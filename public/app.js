@@ -21,7 +21,7 @@ const ADMIN_SEQUENCE = "bbtsladmin";
 const ADMIN_SEQUENCE_TIMEOUT_MS = 2500;
 const DESCRIPTION_PREVIEW_LENGTH = 175;
 const MAX_EDIT_VALUE = 10_000_000;
-const UNAVAILABLE_IMAGE_MARKUP = '<div class="card-thumb"><img src="/images/unavailable.webp" alt="Unavailable" loading="lazy"></div>';
+const UNAVAILABLE_IMAGE_MARKUP = '<div class="card-thumb"><img src="/images/unavailable.webp" alt="Unavailable"></div>';
 const PENCIL_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 2.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z"/><path d="M14.5 5.5l4 4"/></svg>';
 
 const dom = {
@@ -325,7 +325,7 @@ function buildCardImageMarkup(sword) {
     return UNAVAILABLE_IMAGE_MARKUP;
   }
 
-  return `<div class="card-thumb"><img src="${sword.img}" alt="${escapeHtmlAttr(sword.n)}" loading="lazy"></div>`;
+  return `<div class="card-thumb"><img src="${sword.img}" alt="${escapeHtmlAttr(sword.n)}"></div>`;
 }
 
 function buildCardMarkup(sword) {

@@ -11,17 +11,17 @@
   "observability": {
     "enabled": true
   },
+  "routes": [
+    {
+      "pattern": "bbtsl.lol/*",
+      "zone_name": "bbtsl.lol"
+    }
+  ],
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "bladeball-value-list",
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID"
-    }
-  ],
-  "r2_buckets": [
-    {
-      "binding": "SWORD_IMAGES",
-      "bucket_name": "bladeball-value-list-images"
+      "database_id": "8526c5b5-390b-47e0-b462-7059e1c52209"
     }
   ],
   "vars": {
