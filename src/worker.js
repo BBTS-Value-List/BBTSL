@@ -2411,37 +2411,6 @@ function parseDataUrl(input, fieldLabel = "Media") {
   return { contentType, extension: mediaInfo.ext, kind: mediaInfo.kind, bytes };
 }
 
-function normalizeBlobBody(value) {
-  if (value instanceof ArrayBuffer || value instanceof Uint8Array) {
-    return value;
-  }
-
-  if (ArrayBuffer.isView(value)) {
-    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-  }
-
-  if (Array.isArray(value)) {
-    return Uint8Array.from(value);
-  }
-
-  if (value?.buffer instanceof ArrayBuffer) {
-    const byteOffset = Number(value.byteOffset || 0);
-    const byteLength = Number(value.byteLength || value.buffer.byteLength || 0);
-    return new Uint8Array(value.buffer, byteOffset, byteLength);
-  }
-
-  if (value && typeof value === "object") {
-    const numericKeys = Object.keys(value)
-      .filter((key) => /^\d+$/.test(key))
-      .sort((left, right) => Number(left) - Number(right));
-    if (numericKeys.length > 0) {
-      return Uint8Array.from(numericKeys.map((key) => Number(value[key]) || 0));
-    }
-  }
-
-  return value;
-}
-
 async function writeAuditLog(env, entry) {
   const beforeSnapshot = entry.beforeSnapshot === undefined ? null : entry.beforeSnapshot;
   const afterSnapshot = entry.afterSnapshot === undefined ? null : entry.afterSnapshot;
