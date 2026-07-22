@@ -27,15 +27,18 @@ const HTML_SECURITY_HEADERS = {
 const SESSION_COOKIE = "bbtsl_session";
 const OAUTH_STATE_COOKIE = "bbtsl_oauth_state";
 const APP_REQUEST_HEADER = "x-bbts-request";
+const PRIVATE_API_CLIENT_HEADER = "x-bbtsl-api-client";
+const PRIVATE_API_DATE_HEADER = "x-bbtsl-api-date";
 const AUTH_VERIFY_BUCKET = "auth_verify";
 const ADMIN_MUTATION_BUCKET = "admin_mutation";
-const PUBLIC_API_BUCKET = "public_api";
+const PRIVATE_API_BUCKET = "private_api";
 const SESSION_LIFETIME_SECONDS = 60 * 60 * 12;
 const REAUTH_WINDOW_SECONDS = 60 * 10;
 const OAUTH_STATE_LIFETIME_SECONDS = 60 * 10;
 const PUBLIC_API_LIMIT = 100;
 const PUBLIC_API_DEFAULT_LIMIT = 50;
 const PUBLIC_API_MAX_OFFSET = 10_000;
+const PRIVATE_API_KEY_HEX_LENGTH = 32;
 const OAUTH_RATE_LIMIT = 20;
 const MAX_EDIT_VALUE = 10_000_000;
 const MAX_TEXT_LENGTH = 2_000;
@@ -45,16 +48,49 @@ const MAX_SFX_BYTES = 1 * 1024 * 1024;
 const MAX_VISUAL_PREVIEW_BYTES = 10 * 1024 * 1024;
 const DIRECT_MEDIA_READ_LIMIT = 512 * 1024;
 const D1_MEDIA_CHUNK_BYTES = 1 * 1024 * 1024;
+const R2_CLASS_A_LIMIT = 1_000_000;
+const R2_CLASS_B_LIMIT = 10_000_000;
+const R2_STORAGE_LIMIT_BYTES = 10 * 1024 * 1024 * 1024;
+const SITE_STATE_KEY = "__system/site-state.json";
+const RATE_LIMIT_STATE_KEY = "__system/rate-limits.json";
+const SYSTEM_DISCORD_USER_ID = "386438401563557888";
+const SYSTEM_ACCOUNT_DISPLAY_NAME = "BBTSL";
+const SYSTEM_ACCOUNT_HANDLE = "@root";
+const SYSTEM_ACCOUNT_ROLE_LABEL = "System";
+const SYSTEM_ACCOUNT_AVATAR_URL = "/og-image.png";
 const CARD_ID_PREFIX = "#";
 const CARD_ID_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 const CARD_ID_LENGTH = 6;
+const CATEGORY_COLOR_MAP = {
+  LTM: "#a389f4",
+  Ranked: "#e8b94f",
+  "Top Spenders": "#4fd1a5",
+  "Other Swords": "#5fc2ff",
+  Explosions: "#ff6a6a",
+  Emotes: "#ff89cf"
+};
+const VALUE_BAR_STOPS = ["#4a5a78", "#5573c9", "#7d5fd9", "#a34fd0", "#d94f9e", "#e8636b", "#e88a4f", "#efab4a", "#f4cf5c"];
 const MEDIA_KEY_LIMIT = 512;
 const USER_ROLE_VALUES = ["Viewer", "Contributor", "Editor", "Maintainer", "Administrator", "Developer", "Owner"];
 const PUBLIC_TEAM_ROLES = new Set(["Contributor", "Editor", "Maintainer", "Administrator", "Developer", "Owner"]);
-const CATEGORIES = new Set(["LTM", "Ranked", "Top Spenders", "Other Swords", "Explosions"]);
+const CATEGORIES = new Set(["LTM", "Ranked", "Top Spenders", "Other Swords", "Explosions", "Emotes"]);
 const DEMANDS = new Set(["Very High", "High", "Medium", "Low", "N/A"]);
 const TRENDS = new Set(["Rising", "Falling", "Stable", "Manipulated", "N/A"]);
-const MEDIA_VARIANTS = new Set(["card-image", "detail", "slash", "slash-audio"]);
+const DEMAND_SORT_RANK = {
+  "Very High": 4,
+  High: 3,
+  Medium: 2,
+  Low: 1,
+  "N/A": 0
+};
+const TREND_SORT_RANK = {
+  Rising: 4,
+  Stable: 3,
+  Falling: 2,
+  Manipulated: 1,
+  "N/A": 0
+};
+const MEDIA_VARIANTS = new Set(["card-image", "detail", "slash", "slash-audio", "finisher"]);
 const MEDIA_MIME_MAP = new Map([
   ["image/webp", { ext: "webp", kind: "image" }],
   ["image/png", { ext: "png", kind: "image" }],
@@ -81,6 +117,8 @@ const ROLE_PERMISSIONS = {
 };
 
 let coreSchemaReadyPromise = null;
+let siteStateCache = null;
+let rateLimitStateCache = null;
 
 export default {
   async fetch(request, env) {
@@ -103,7 +141,19 @@ export default {
         return withSecurityHeaders(await handleStaticPageRequest(request, env, "/terms.html"));
       }
 
+      if (url.pathname.startsWith("/meta/item/") && (request.method === "GET" || request.method === "HEAD")) {
+        return withSecurityHeaders(await handleItemMetaImage(request, env, url));
+      }
+
+      if (parseDeepLinkCardId(url.pathname) && (request.method === "GET" || request.method === "HEAD")) {
+        const legacyCardId = parseDeepLinkCardId(url.pathname);
+        const redirectUrl = new URL("/", request.url);
+        redirectUrl.searchParams.set("item", String(legacyCardId).replace(/^#/, ""));
+        return Response.redirect(redirectUrl.toString(), 302);
+      }
+
       if (url.pathname === "/api/auth/status" && request.method === "GET") {
+        enforceInternalReadRequest(request);
         return withSecurityHeaders(await handleAuthStatus(request, env));
       }
 
@@ -117,6 +167,10 @@ export default {
 
       if (url.pathname === "/api/auth/logout" && request.method === "POST") {
         return withSecurityHeaders(await handleAuthLogout(request));
+      }
+
+      if (url.pathname === "/api/auth/system-session" && request.method === "POST") {
+        return withSecurityHeaders(await handleAuthSystemSession(request, env));
       }
 
       if (url.pathname === "/api/v1/health" && request.method === "GET") {
@@ -135,11 +189,16 @@ export default {
         return withSecurityHeaders(await handlePublicApiTeam(request, env));
       }
 
+      if (url.pathname === "/api/internal/media-reconcile" && request.method === "POST") {
+        return withSecurityHeaders(await handleInternalMediaReconcile(request, env));
+      }
+
       if (url.pathname === "/api/v1/health" || url.pathname === "/api/v1/swords" || url.pathname === "/api/v1/team" || url.pathname.startsWith("/api/v1/swords/")) {
         return withSecurityHeaders(methodNotAllowed(["GET"]));
       }
 
       if (url.pathname === "/api/swords" && request.method === "GET") {
+        enforceInternalReadRequest(request);
         return withSecurityHeaders(await handleListSwords(request, env, url));
       }
 
@@ -177,10 +236,12 @@ export default {
       }
 
       if (url.pathname === "/api/export" && request.method === "GET") {
+        enforceInternalReadRequest(request);
         return withSecurityHeaders(await requireCapability(request, env, "data:export", ({ actor }) => handleExport(env, actor)));
       }
 
       if (url.pathname === "/api/team" && request.method === "GET") {
+        enforceInternalReadRequest(request);
         return withSecurityHeaders(await handleListTeam(request, env));
       }
 
@@ -197,6 +258,7 @@ export default {
       }
 
       if (url.pathname === "/api/audit" && request.method === "GET") {
+        enforceInternalReadRequest(request);
         return withSecurityHeaders(await requireCapability(request, env, "audit:view", () => handleListAudit(url, env)));
       }
 
@@ -204,7 +266,7 @@ export default {
         return withSecurityHeaders(await requireCapability(request, env, "audit:revert", ({ actor, session }) => handleAuditRevert(request, env, actor, session)));
       }
 
-      if ((url.pathname.startsWith("/images/") || url.pathname.startsWith("/media/")) && request.method === "GET") {
+      if ((url.pathname.startsWith("/images/") || url.pathname.startsWith("/media/")) && (request.method === "GET" || request.method === "HEAD")) {
         const prefix = url.pathname.startsWith("/images/") ? "/images/" : "/media/";
         const key = decodePathSegment(url.pathname.slice(prefix.length), "media key");
         return withSecurityHeaders(await handleGetMedia(request, env, key));
@@ -348,10 +410,12 @@ async function handleAuthCallback(request, env, url) {
   const tokenResponse = await exchangeDiscordCode(env, code);
   const discordUser = await fetchDiscordIdentity(tokenResponse.access_token);
   const user = await upsertDiscordUser(env, discordUser);
+  const existingSession = await readSession(request, env);
   const cookie = await issueSessionCookie(request, env, {
     userId: user.id,
     purpose: state.purpose || "login",
-    returnTo: state.returnTo || "/"
+    returnTo: state.returnTo || "/",
+    systemMode: Boolean(existingSession?.systemMode && canUseSystemAccount(user))
   });
 
   const redirectUrl = new URL(state.returnTo || "/", request.url);
@@ -377,88 +441,136 @@ async function handleAuthLogout(request) {
   });
 }
 
+async function handleAuthSystemSession(request, env) {
+  enforceTrustedOrigin(request);
+  enforceAppRequest(request);
+  const actor = await getActorFromRequest(request, env);
+  const baseUser = actor?.baseUser || actor?.user || null;
+  if (!baseUser) {
+    throw new HttpError(401, "Sign in with Discord to continue.");
+  }
+  if (!canUseSystemAccount(baseUser)) {
+    throw new HttpError(403, "You do not have permission to use the BBTSL System account.");
+  }
+
+  const cookie = await issueSessionCookie(request, env, {
+    userId: baseUser.id,
+    purpose: "login",
+    existingReauthAt: actor?.session?.reauthAt || actor?.session?.iat || 0,
+    systemMode: true
+  });
+
+  return new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: {
+      ...JSON_HEADERS,
+      "set-cookie": cookie
+    }
+  });
+}
+
 async function handleListSwords(request, env, url) {
   const actor = await getActorFromRequest(request, env);
   const category = url.searchParams.get("category");
   const search = (url.searchParams.get("search") || "").trim().toLowerCase();
   const sort = url.searchParams.get("sort") || "value-desc";
-
-  const sortSql = getSortSql(sort);
-  const bindings = [];
-  const where = [];
-
-  if (category && category !== "All") {
-    where.push("c = ?");
-    bindings.push(category);
-  }
-
-  if (search) {
-    where.push("LOWER(n) LIKE ?");
-    bindings.push(`%${search}%`);
-  }
-
-  const sql = `
-    SELECT id, card_id, n, c, v, d, t, ct, u, descr, image_key, detail_image_key, slash_media_key, slash_audio_key, edited
-    FROM swords
-    ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-    ${sortSql}
-  `;
-
-  const { results } = await env.DB.prepare(sql).bind(...bindings).all();
-  const mediaMap = await loadMediaDescriptorMap(env, collectSwordMediaKeys(results || []));
+  const state = await loadSiteState(env);
+  const sortFn = getSwordSorter(sort);
+  const results = (state.swords || [])
+    .filter((row) => !category || category === "All" || row.c === category)
+    .filter((row) => matchesSwordSearch(row, search))
+    .sort(sortFn);
+  const mediaMap = await loadMediaDescriptorMap(env, collectSwordMediaKeys(results));
   return json({
-    swords: (results || []).map((row) => serializeSword(row, mediaMap)),
+    swords: results.map((row) => serializeSword(row, mediaMap)),
     auth: buildAuthStatusResponse(actor)
   });
 }
 
 function handlePublicApiHealth() {
-  return publicApiJson({
-    ok: true,
-    version: "v1"
+  return privateApiJson({
+    data: {
+      ok: true,
+      service: "bbtsl-private-api",
+      version: "v1",
+      keyWindowStartsAt: `${currentUtcDateString()}T00:00:00Z`,
+      keyWindowEndsAt: `${getNextUtcDateString(currentUtcDateString())}T00:00:00Z`
+    }
   });
 }
 
 async function handlePublicApiListSwords(request, env, url) {
-  await consumeRateLimit(env, PUBLIC_API_BUCKET, getClientIdentifier(request), 120, 60);
-  const query = parsePublicSwordQuery(url);
-  const { results } = await env.DB.prepare(`
-    SELECT id, card_id, n, c, v, d, t, ct, u, descr, image_key, detail_image_key, slash_media_key, slash_audio_key, edited
-    FROM swords
-    ${query.where.length ? `WHERE ${query.where.join(" AND ")}` : ""}
-    ${query.sortSql}
-    LIMIT ? OFFSET ?
-  `).bind(...query.bindings, query.limit, query.offset).all();
-  const totalRow = await env.DB.prepare(`
-    SELECT COUNT(*) AS total
-    FROM swords
-    ${query.where.length ? `WHERE ${query.where.join(" AND ")}` : ""}
-  `).bind(...query.bindings).first();
-  const rows = results || [];
+  const authContext = await requirePrivateApiAccess(request, env);
+  await consumeRateLimit(env, PRIVATE_API_BUCKET, `${authContext.clientId}:${getClientIdentifier(request)}`, 180, 60);
+  const query = parsePrivateSwordQuery(url);
+  const state = await loadSiteState(env);
+  const filteredRows = filterPrivateSwordRows(state.swords || [], query);
+  const rows = filteredRows.slice(query.offset, query.offset + query.limit);
   const mediaMap = await loadMediaDescriptorMap(env, collectSwordMediaKeys(rows));
-  return publicApiJson({
-    data: rows.map((row) => serializeSword(row, mediaMap)),
+  return privateApiJson({
+    data: rows.map((row) => serializePrivateApiSword(row, mediaMap)),
     meta: {
-      total: Number(totalRow?.total || 0),
+      version: "v1",
+      generatedAt: currentIsoString(),
+      clientId: authContext.clientId,
+      total: filteredRows.length,
       limit: query.limit,
-      offset: query.offset
+      offset: query.offset,
+      hasMore: query.offset + rows.length < filteredRows.length,
+      filters: {
+        category: query.category || null,
+        demand: query.demand || null,
+        trend: query.trend || null,
+        cardId: query.cardId || null,
+        search: query.search || null,
+        sort: query.sort
+      }
     }
   });
 }
 
 async function handlePublicApiGetSword(request, env, url) {
-  await consumeRateLimit(env, PUBLIC_API_BUCKET, getClientIdentifier(request), 120, 60);
+  const authContext = await requirePrivateApiAccess(request, env);
+  await consumeRateLimit(env, PRIVATE_API_BUCKET, `${authContext.clientId}:${getClientIdentifier(request)}`, 180, 60);
   const cardId = parseCardIdPath(url.pathname, "/api/v1/swords/");
   const row = await getSwordByCardId(env, cardId);
   if (!row) {
     throw new HttpError(404, "Sword not found.");
   }
   const mediaMap = await loadMediaDescriptorMap(env, collectSwordMediaKeys([row]));
-  return publicApiJson({ data: serializeSword(row, mediaMap) });
+  return privateApiJson({
+    data: serializePrivateApiSword(row, mediaMap),
+    meta: {
+      version: "v1",
+      generatedAt: currentIsoString(),
+      clientId: authContext.clientId
+    }
+  });
+}
+
+async function handleItemMetaImage(request, env, url) {
+  const cardId = parseMetaItemCardIdPath(url.pathname);
+  const state = await loadSiteState(env);
+  const row = getSiteSwordByCardId(state, cardId);
+  if (!row) {
+    throw new HttpError(404, "Sword not found.");
+  }
+  const mediaMap = buildSiteMediaDescriptorMap(state, collectSwordMediaKeys([row]));
+  const sword = serializeSword(row, mediaMap);
+  const svg = buildItemMetaSvg(sword);
+  const headers = {
+    "content-type": "image/svg+xml; charset=utf-8",
+    "cache-control": "public, max-age=300"
+  };
+  if (request.method === "HEAD") {
+    return new Response(null, { status: 200, headers });
+  }
+  return new Response(svg, { status: 200, headers });
 }
 
 async function handlePublicApiTeam(request, env) {
-  await consumeRateLimit(env, PUBLIC_API_BUCKET, getClientIdentifier(request), 120, 60);
+  const authContext = await requirePrivateApiAccess(request, env);
+  await consumeRateLimit(env, PRIVATE_API_BUCKET, `${authContext.clientId}:${getClientIdentifier(request)}`, 180, 60);
   const { placeholders, values } = getPublicTeamRoleFilter();
   const { results } = await env.DB.prepare(`
     SELECT id, discord_user_id, username, global_name, avatar_hash, role, status, created_at, updated_at, last_login_at
@@ -466,35 +578,46 @@ async function handlePublicApiTeam(request, env) {
     WHERE status = 'active' AND role IN (${placeholders})
     ORDER BY role_sort DESC, updated_at DESC, id ASC
   `).bind(...values).all();
-  return publicApiJson({ data: (results || []).map((row) => serializePublicTeamUser(row)) });
+  return privateApiJson({
+    data: (results || []).map((row) => serializePrivateApiTeamUser(row)),
+    meta: {
+      version: "v1",
+      generatedAt: currentIsoString(),
+      clientId: authContext.clientId,
+      total: Number((results || []).length)
+    }
+  });
 }
 
 async function handleCreateSword(request, env, actor) {
   const payload = normalizeSwordPayload(await request.json());
-  const { image, detailMedia, slashMedia, slashAudio } = await persistSwordMedia(env, payload, payload.n);
-  const cardId = await generateUniqueCardId(env);
-  const now = currentDateString();
-
-  const result = await env.DB.prepare(`
-    INSERT INTO swords (card_id, n, c, v, d, t, ct, u, descr, image_key, detail_image_key, slash_media_key, slash_audio_key, edited)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-  `).bind(
-    cardId,
-    payload.n,
-    payload.c,
-    payload.v,
-    payload.d,
-    payload.t,
-    payload.ct,
-    now,
-    payload.descr,
-    image.mediaKey,
-    detailMedia.mediaKey,
-    slashMedia.mediaKey,
-    slashAudio.mediaKey
-  ).run();
-
-  const created = await getSwordById(env, Number(result.meta.last_row_id));
+  const { image, detailMedia, slashMedia, slashAudio, finisherMedia } = await persistSwordMedia(env, payload, payload.n);
+  const state = await loadSiteState(env);
+  const cardId = await generateUniqueCardId(env, state);
+  const now = currentUtcDateString();
+  const created = normalizeSiteSwordRecord({
+    id: getNextSwordId(state),
+    card_id: cardId,
+    n: payload.n,
+    c: payload.c,
+    v: payload.v,
+    d: payload.d,
+    t: payload.t,
+    ct: payload.ct,
+    u: now,
+    descr: payload.descr,
+    image_key: image.mediaKey,
+    detail_image_key: detailMedia.mediaKey,
+    slash_media_key: slashMedia.mediaKey,
+    slash_audio_key: slashAudio.mediaKey,
+    finisher_media_key: finisherMedia.mediaKey,
+    owners_choice: payload.ownersChoice ? 1 : 0,
+    edited: 1
+  });
+  await updateSiteState(env, (currentState) => ({
+    ...currentState,
+    swords: upsertSiteSwordRecord(currentState.swords, created)
+  }));
   const mediaMap = await loadMediaDescriptorMap(env, collectSwordMediaKeys([created]));
   await writeAuditLog(env, {
     actor,
@@ -517,31 +640,32 @@ async function handleUpdateSword(request, env, id, actor) {
   }
 
   const payload = normalizeSwordPayload(await request.json());
-  const { image, detailMedia, slashMedia, slashAudio } = await persistSwordMedia(env, payload, payload.n, existing);
+  const { image, detailMedia, slashMedia, slashAudio, finisherMedia } = await persistSwordMedia(env, payload, payload.n, existing);
   const beforeMediaMap = await loadMediaDescriptorMap(env, collectSwordMediaKeys([existing]));
   const beforeSnapshot = serializeSword(existing, beforeMediaMap);
 
-  await env.DB.prepare(`
-    UPDATE swords
-    SET n = ?, c = ?, v = ?, d = ?, t = ?, ct = ?, u = ?, descr = ?, image_key = ?, detail_image_key = ?, slash_media_key = ?, slash_audio_key = ?, edited = 1
-    WHERE id = ?
-  `).bind(
-    payload.n,
-    payload.c,
-    payload.v,
-    payload.d,
-    payload.t,
-    payload.ct,
-    currentDateString(),
-    payload.descr,
-    image.mediaKey,
-    detailMedia.mediaKey,
-    slashMedia.mediaKey,
-    slashAudio.mediaKey,
-    id
-  ).run();
-
-  const updated = await getSwordById(env, id);
+  const updated = normalizeSiteSwordRecord({
+    ...existing,
+    n: payload.n,
+    c: payload.c,
+    v: payload.v,
+    d: payload.d,
+    t: payload.t,
+    ct: payload.ct,
+    u: currentUtcDateString(),
+    descr: payload.descr,
+    image_key: image.mediaKey,
+    detail_image_key: detailMedia.mediaKey,
+    slash_media_key: slashMedia.mediaKey,
+    slash_audio_key: slashAudio.mediaKey,
+    finisher_media_key: finisherMedia.mediaKey,
+    owners_choice: payload.ownersChoice ? 1 : 0,
+    edited: 1
+  });
+  await updateSiteState(env, (currentState) => ({
+    ...currentState,
+    swords: upsertSiteSwordRecord(currentState.swords, updated)
+  }));
   const mediaMap = await loadMediaDescriptorMap(env, collectSwordMediaKeys([updated]));
   await writeAuditLog(env, {
     actor,
@@ -574,7 +698,10 @@ async function handleDeleteSword(request, env, id, actor) {
   }
   const beforeMediaMap = await loadMediaDescriptorMap(env, collectSwordMediaKeys([existing]));
 
-  await env.DB.prepare("DELETE FROM swords WHERE id = ?").bind(id).run();
+  await updateSiteState(env, (currentState) => ({
+    ...currentState,
+    swords: removeSiteSwordRecord(currentState.swords, id)
+  }));
   await writeAuditLog(env, {
     actor,
     actionType: "sword.delete",
@@ -598,30 +725,14 @@ async function handleReset(request, env, actor, session) {
   }
   requireFreshReauth(session);
 
-  const beforeRows = await env.DB.prepare(`
-    SELECT id, card_id, n, c, v, d, t, ct, u, descr, image_key, detail_image_key, slash_media_key, slash_audio_key, edited
-    FROM swords
-    ORDER BY id ASC
-  `).all();
-  const beforeResults = beforeRows.results || [];
+  const state = await loadSiteState(env);
+  const beforeResults = (state.swords || []).map((row) => normalizeSiteSwordRecord(row));
   const beforeMediaMap = await loadMediaDescriptorMap(env, collectSwordMediaKeys(beforeResults));
-
-  await env.DB.batch([
-    env.DB.prepare("DELETE FROM swords"),
-    env.DB.prepare(`
-      INSERT INTO swords (id, card_id, n, c, v, d, t, ct, u, descr, image_key, detail_image_key, slash_media_key, slash_audio_key, edited)
-      SELECT id, card_id, n, c, v, d, t, ct, u, descr, image_key, detail_image_key, slash_media_key, slash_audio_key, edited
-      FROM sword_baseline
-      ORDER BY id ASC
-    `)
-  ]);
-
-  const afterRows = await env.DB.prepare(`
-    SELECT id, card_id, n, c, v, d, t, ct, u, descr, image_key, detail_image_key, slash_media_key, slash_audio_key, edited
-    FROM swords
-    ORDER BY id ASC
-  `).all();
-  const afterResults = afterRows.results || [];
+  const afterResults = (state.baseline || []).map((row) => normalizeSiteSwordRecord(row));
+  await updateSiteState(env, (currentState) => ({
+    ...currentState,
+    swords: afterResults.map((row) => normalizeSiteSwordRecord(row))
+  }));
   const afterMediaMap = await loadMediaDescriptorMap(env, collectSwordMediaKeys(afterResults));
 
   await writeAuditLog(env, {
@@ -642,11 +753,9 @@ async function handleReset(request, env, actor, session) {
 }
 
 async function handleExport(env, actor) {
-  const { results } = await env.DB.prepare(`
-    SELECT id, card_id, n, c, v, d, t, ct, u, descr, image_key, detail_image_key, slash_media_key, slash_audio_key, edited
-    FROM swords
-    ORDER BY v DESC, id ASC
-  `).all();
+  const state = await loadSiteState(env);
+  const results = [...(state.swords || [])].sort(getSwordSorter("value-desc"));
+  const mediaMap = await loadMediaDescriptorMap(env, collectSwordMediaKeys(results));
   await writeAuditLog(env, {
     actor,
     actionType: "data.export",
@@ -655,9 +764,9 @@ async function handleExport(env, actor) {
     entityPublicId: null,
     summary: "Exported sword data",
     beforeSnapshot: null,
-    afterSnapshot: { count: Number((results || []).length) }
+    afterSnapshot: { count: Number(results.length) }
   });
-  return json({ swords: (results || []).map((row) => serializeSword(row)) });
+  return json({ swords: results.map((row) => serializeSword(row, mediaMap)) });
 }
 
 async function handleListTeam(request, env) {
@@ -665,9 +774,9 @@ async function handleListTeam(request, env) {
   const includeAll = hasCapability(actor?.user?.role, "team:manage");
   const { placeholders, values } = getPublicTeamRoleFilter();
   const sql = includeAll
-    ? "SELECT id, discord_user_id, username, global_name, avatar_hash, role, status, created_at, updated_at, last_login_at FROM users WHERE role != ? ORDER BY role_sort DESC, updated_at DESC, id ASC"
+    ? "SELECT id, discord_user_id, username, global_name, avatar_hash, role, status, created_at, updated_at, last_login_at FROM users WHERE role != ? AND discord_user_id != ? ORDER BY role_sort DESC, updated_at DESC, id ASC"
     : `SELECT id, discord_user_id, username, global_name, avatar_hash, role, status, created_at, updated_at, last_login_at FROM users WHERE status = 'active' AND role IN (${placeholders}) ORDER BY role_sort DESC, updated_at DESC, id ASC`;
-  const bindings = includeAll ? ["Viewer"] : values;
+  const bindings = includeAll ? ["Viewer", SYSTEM_DISCORD_USER_ID] : values;
   const { results } = await env.DB.prepare(sql).bind(...bindings).all();
   return json({
     team: (results || []).map((row) => includeAll ? serializeTeamUser(row) : serializePublicTeamUser(row)),
@@ -875,6 +984,8 @@ async function handleAuditRevert(request, env, actor, session) {
   }
 
   const updated = await getSwordById(env, Number(row.entity_id));
+  const currentMediaMap = current ? await loadMediaDescriptorMap(env, collectSwordMediaKeys([current])) : new Map();
+  const updatedMediaMap = updated ? await loadMediaDescriptorMap(env, collectSwordMediaKeys([updated])) : new Map();
   await writeAuditLog(env, {
     actor,
     actionType: "audit.revert",
@@ -882,11 +993,11 @@ async function handleAuditRevert(request, env, actor, session) {
     entityId: updated?.id || Number(row.entity_id),
     entityPublicId: updated?.card_id || row.entity_public_id,
     summary: `Reverted audit log #${logId}`,
-    beforeSnapshot: current ? serializeSword(current) : null,
-    afterSnapshot: updated ? serializeSword(updated) : beforeSnapshot
+    beforeSnapshot: current ? serializeSword(current, currentMediaMap) : null,
+    afterSnapshot: updated ? serializeSword(updated, updatedMediaMap) : beforeSnapshot
   });
 
-  return json({ ok: true, sword: updated ? serializeSword(updated) : null });
+  return json({ ok: true, sword: updated ? serializeSword(updated, updatedMediaMap) : null });
 }
 
 async function handleGetMedia(request, env, key) {
@@ -907,37 +1018,20 @@ async function handleGetMedia(request, env, key) {
     return cachedResponse;
   }
 
-  const row = await env.DB.prepare(`
-    SELECT content_type, COALESCE(media_size, length(image_data)) AS media_size
-    FROM sword_images
-    WHERE image_key = ?
-  `).bind(key).first();
+  await reserveR2Usage(env, 0, 1, 0);
 
-  if (!row) {
+  const mediaObject = await env.MEDIA_BUCKET.get(key);
+  if (!mediaObject) {
     return env.ASSETS.fetch(new Request(new URL("/images/unavailable.webp", request.url), request));
   }
 
-  const mediaSize = Number(row.media_size || 0);
-  let mediaBody = null;
-  if (mediaSize > 0 && mediaSize <= DIRECT_MEDIA_READ_LIMIT) {
-    const bodyRow = await env.DB.prepare(`
-      SELECT image_data
-      FROM sword_images
-      WHERE image_key = ?
-    `).bind(key).first();
-    mediaBody = await readMediaBody(bodyRow?.image_data);
-  }
-
-  if (!mediaBody?.byteLength) {
-    mediaBody = await readMediaBodyFromChunks(env, key, mediaSize);
-  }
-
-  if (!mediaBody?.byteLength) {
+  const mediaBody = await mediaObject.arrayBuffer();
+  const contentType = String(mediaObject.httpMetadata?.contentType || mediaObject.customMetadata?.contentType || "").toLowerCase();
+  if (!mediaBody) {
     return env.ASSETS.fetch(new Request(new URL("/images/unavailable.webp", request.url), request));
   }
 
   const headers = new Headers();
-  const contentType = String(row.content_type || "").toLowerCase();
   headers.set("content-type", contentType || "application/octet-stream");
   headers.set("cache-control", "public, max-age=31536000, immutable");
   headers.set("x-content-type-options", HTML_SECURITY_HEADERS["x-content-type-options"]);
@@ -948,6 +1042,129 @@ async function handleGetMedia(request, env, key) {
   const response = new Response(mediaBody, { headers });
   await cache.put(cacheKey, response.clone());
   return response;
+}
+
+async function assertInternalMaintenanceAccess(request, env) {
+  const expectedSecret = String(env.MEDIA_MIGRATION_SECRET || "");
+  const providedSecret = request.headers.get("x-bbtsl-maintenance-key") || "";
+  if (!expectedSecret || providedSecret !== expectedSecret) {
+    throw new HttpError(404, "Not found.");
+  }
+}
+
+function getPrivateApiClientSecrets(env) {
+  const raw = String(env.V1_API_CLIENT_SECRETS || "").trim();
+  if (!raw) {
+    throw new HttpError(500, "V1_API_CLIENT_SECRETS is not configured.");
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new HttpError(500, "V1_API_CLIENT_SECRETS is invalid JSON.");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new HttpError(500, "V1_API_CLIENT_SECRETS must be an object.");
+  }
+  return Object.fromEntries(
+    Object.entries(parsed)
+      .map(([clientId, secret]) => [String(clientId).trim(), String(secret || "").trim()])
+      .filter(([clientId, secret]) => clientId && secret)
+  );
+}
+
+function getPrivateApiBearerToken(request) {
+  const authorization = String(request.headers.get("authorization") || "").trim();
+  if (/^Bearer\s+/i.test(authorization)) {
+    return authorization.replace(/^Bearer\s+/i, "").trim();
+  }
+  return "";
+}
+
+async function derivePrivateApiDailyKey(secret, clientId, dateString) {
+  const digest = await hmacHex(secret, `bbtsl-v1:${clientId}:${dateString}`, "V1_API_CLIENT_SECRETS");
+  return digest.slice(0, PRIVATE_API_KEY_HEX_LENGTH);
+}
+
+async function requirePrivateApiAccess(request, env) {
+  const clientId = String(request.headers.get(PRIVATE_API_CLIENT_HEADER) || "").trim();
+  const dateString = String(request.headers.get(PRIVATE_API_DATE_HEADER) || "").trim();
+  const providedKey = getPrivateApiBearerToken(request);
+  if (!clientId || !/^[a-z0-9][a-z0-9._-]{1,63}$/i.test(clientId)) {
+    throw new HttpError(401, "Private API client header is missing or invalid.", { "www-authenticate": 'Bearer realm="bbtsl-v1"' });
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateString) || dateString !== currentUtcDateString()) {
+    throw new HttpError(401, "Private API date header is missing or invalid.", { "www-authenticate": 'Bearer realm="bbtsl-v1"' });
+  }
+  if (!/^[a-f0-9]{32}$/i.test(providedKey)) {
+    throw new HttpError(401, "Private API key is missing or invalid.", { "www-authenticate": 'Bearer realm="bbtsl-v1"' });
+  }
+  const secrets = getPrivateApiClientSecrets(env);
+  const secret = secrets[clientId];
+  if (!secret) {
+    throw new HttpError(403, "Private API client is not authorized.");
+  }
+  const expectedKey = await derivePrivateApiDailyKey(secret, clientId, dateString);
+  if (!timingSafeEqual(providedKey.toLowerCase(), expectedKey.toLowerCase())) {
+    throw new HttpError(403, "Private API credentials are invalid.");
+  }
+  return { clientId, dateString };
+}
+
+async function handleInternalMediaReconcile(request, env) {
+  await assertInternalMaintenanceAccess(request, env);
+  const state = await loadSiteState(env, { fresh: true });
+  let normalized = 0;
+  const nextMediaVariants = {};
+  const nextMediaObjects = {};
+  const rewriteKey = (mediaKey) => {
+    const normalizedKey = normalizeStoredMediaKey(mediaKey);
+    if (normalizedKey !== mediaKey) {
+      normalized += 1;
+    }
+    return normalizedKey;
+  };
+
+  for (const [baseKey, variant] of Object.entries(state.mediaVariants || {})) {
+    const normalizedBaseKey = normalizeStoredMediaKey(baseKey);
+    nextMediaVariants[normalizedBaseKey] = {
+      ...variant,
+      baseKey: normalizedBaseKey,
+      lowKey: rewriteKey(variant.lowKey),
+      mediumKey: rewriteKey(variant.mediumKey),
+      originalKey: rewriteKey(variant.originalKey)
+    };
+  }
+
+  for (const [mediaKey, mediaObject] of Object.entries(state.mediaObjects || {})) {
+    const normalizedKey = rewriteKey(mediaKey);
+    nextMediaObjects[normalizedKey] = {
+      ...mediaObject,
+      mediaKey: normalizedKey
+    };
+  }
+
+  await updateSiteState(env, (currentState) => ({
+    ...currentState,
+    swords: (currentState.swords || []).map((row) => ({
+      ...row,
+      image_key: row.image_key ? rewriteKey(row.image_key) : null,
+      detail_image_key: row.detail_image_key ? rewriteKey(row.detail_image_key) : null,
+      slash_media_key: row.slash_media_key ? rewriteKey(row.slash_media_key) : null,
+      slash_audio_key: row.slash_audio_key ? rewriteKey(row.slash_audio_key) : null
+    })),
+    baseline: (currentState.baseline || []).map((row) => ({
+      ...row,
+      image_key: row.image_key ? rewriteKey(row.image_key) : null,
+      detail_image_key: row.detail_image_key ? rewriteKey(row.detail_image_key) : null,
+      slash_media_key: row.slash_media_key ? rewriteKey(row.slash_media_key) : null,
+      slash_audio_key: row.slash_audio_key ? rewriteKey(row.slash_audio_key) : null
+    })),
+    mediaVariants: nextMediaVariants,
+    mediaObjects: nextMediaObjects
+  }));
+
+  return json({ ok: true, normalized });
 }
 
 async function requireCapability(request, env, capability, fn) {
@@ -984,7 +1201,11 @@ async function getActorFromRequest(request, env) {
     return null;
   }
 
-  return { session, user: normalizeUserRow(user) };
+  const baseUser = normalizeUserRow(user);
+  if (session.systemMode && canUseSystemAccount(baseUser)) {
+    return buildSystemActor(baseUser, session);
+  }
+  return { session, user: baseUser, baseUser, isSystem: false };
 }
 
 async function readSession(request, env) {
@@ -1003,7 +1224,8 @@ async function readSession(request, env) {
     userId: payload.uid,
     exp: payload.exp,
     iat: payload.iat,
-    reauthAt: payload.reauthAt || payload.iat || 0
+    reauthAt: payload.reauthAt || payload.iat || 0,
+    systemMode: payload.mode === "system"
   };
 }
 
@@ -1015,7 +1237,8 @@ async function issueSessionCookie(request, env, options) {
     uid: Number(options.userId),
     iat: now,
     exp: now + SESSION_LIFETIME_SECONDS,
-    reauthAt
+    reauthAt,
+    mode: options.systemMode ? "system" : "user"
   });
   return buildSessionCookie(request, token, SESSION_LIFETIME_SECONDS);
 }
@@ -1033,15 +1256,19 @@ function buildAuthStatusResponse(actor) {
       authenticated: false,
       user: null,
       permissions: [],
-      reauthFresh: false
+      reauthFresh: false,
+      canUseSystemAccount: false,
+      systemMode: false
     };
   }
 
   return {
     authenticated: true,
-    user: serializeTeamUser(actor.user),
+    user: serializeAuthUser(actor),
     permissions: [...getPermissionsForRole(actor.user.role)],
-    reauthFresh: Boolean(actor.session?.reauthAt && ((Math.floor(Date.now() / 1000) - Number(actor.session.reauthAt)) <= REAUTH_WINDOW_SECONDS))
+    reauthFresh: Boolean(actor.session?.reauthAt && ((Math.floor(Date.now() / 1000) - Number(actor.session.reauthAt)) <= REAUTH_WINDOW_SECONDS)),
+    canUseSystemAccount: canUseSystemAccount(actor.baseUser || actor.user),
+    systemMode: Boolean(actor.isSystem)
   };
 }
 
@@ -1266,6 +1493,33 @@ function serializeTeamUser(row) {
   };
 }
 
+function serializeAuthUser(actor) {
+  if (actor?.isSystem) {
+    return {
+      id: actor.baseUser?.id ?? actor.user?.id ?? null,
+      discordUserId: SYSTEM_ACCOUNT_HANDLE,
+      username: "root",
+      globalName: SYSTEM_ACCOUNT_DISPLAY_NAME,
+      displayName: SYSTEM_ACCOUNT_DISPLAY_NAME,
+      handle: SYSTEM_ACCOUNT_HANDLE,
+      avatarUrl: SYSTEM_ACCOUNT_AVATAR_URL,
+      role: actor.user?.role || "Owner",
+      displayRole: SYSTEM_ACCOUNT_ROLE_LABEL,
+      status: "active",
+      createdAt: actor.baseUser?.created_at || "",
+      updatedAt: actor.baseUser?.updated_at || "",
+      lastLoginAt: actor.baseUser?.last_login_at || "",
+      isSystem: true
+    };
+  }
+
+  return {
+    ...serializeTeamUser(actor.user),
+    displayRole: actor.user?.role || "",
+    isSystem: false
+  };
+}
+
 function serializePublicTeamUser(row) {
   const user = normalizeUserRow(row);
   return {
@@ -1273,6 +1527,36 @@ function serializePublicTeamUser(row) {
     handle: user.username ? `@${user.username}` : "",
     avatarUrl: buildDiscordAvatarUrl(user.discord_user_id, user.avatar_hash),
     role: user.role
+  };
+}
+
+function serializePrivateApiTeamUser(row) {
+  const user = normalizeUserRow(row);
+  return {
+    displayName: user.global_name || user.username || "BBTSL Team",
+    handle: user.username ? `@${user.username}` : "",
+    role: user.role,
+    avatarUrl: buildDiscordAvatarUrl(user.discord_user_id, user.avatar_hash),
+    updatedAt: user.updated_at || null
+  };
+}
+
+function canUseSystemAccount(user) {
+  return String(user?.discord_user_id || "") === SYSTEM_DISCORD_USER_ID;
+}
+
+function buildSystemActor(baseUser, session) {
+  return {
+    session,
+    baseUser,
+    isSystem: true,
+    user: {
+      ...baseUser,
+      role: "Owner",
+      username: "root",
+      global_name: SYSTEM_ACCOUNT_DISPLAY_NAME,
+      avatar_hash: ""
+    }
   };
 }
 
@@ -1298,20 +1582,205 @@ function getDiscordDefaultAvatarIndex(discordUserId) {
   }
 }
 
+function createEmptySiteState() {
+  return {
+    version: 1,
+    swords: [],
+    baseline: [],
+    mediaVariants: {},
+    mediaObjects: {},
+    usage: {
+      monthly: {},
+      totalStorageBytes: 0
+    }
+  };
+}
+
+function createEmptyRateLimitState() {
+  return {
+    version: 1,
+    buckets: {}
+  };
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function normalizeSiteSwordRecord(row = {}) {
+  return {
+    id: Number(row.id),
+    card_id: row.card_id || null,
+    n: row.n || "",
+    c: row.c || "",
+    v: Number(row.v || 0),
+    d: row.d || "",
+    t: row.t || "",
+    ct: row.ct === null || row.ct === undefined || row.ct === "" ? null : Number(row.ct),
+    u: row.u || currentUtcDateString(),
+    descr: row.descr || "",
+    image_key: row.image_key || null,
+    detail_image_key: row.detail_image_key || null,
+    slash_media_key: row.slash_media_key || null,
+    slash_audio_key: row.slash_audio_key || null,
+    finisher_media_key: row.finisher_media_key || null,
+    owners_choice: Number(row.owners_choice ? 1 : 0),
+    edited: Number(row.edited ? 1 : 0)
+  };
+}
+
+async function readSiteStateObject(env) {
+  const object = await env.MEDIA_BUCKET.get(SITE_STATE_KEY);
+  if (!object) {
+    return null;
+  }
+  return JSON.parse(await object.text());
+}
+
+async function writeSiteStateObject(env, state) {
+  const normalizedState = {
+    version: 1,
+    swords: (state.swords || []).map((row) => normalizeSiteSwordRecord(row)).sort((left, right) => Number(left.id) - Number(right.id)),
+    baseline: (state.baseline || []).map((row) => normalizeSiteSwordRecord(row)).sort((left, right) => Number(left.id) - Number(right.id)),
+    mediaVariants: state.mediaVariants || {},
+    mediaObjects: state.mediaObjects || {},
+    usage: {
+      monthly: state.usage?.monthly || {},
+      totalStorageBytes: Number(state.usage?.totalStorageBytes || 0)
+    }
+  };
+  siteStateCache = cloneJson(normalizedState);
+  await env.MEDIA_BUCKET.put(SITE_STATE_KEY, JSON.stringify(normalizedState), {
+    httpMetadata: { contentType: "application/json; charset=utf-8" }
+  });
+}
+
+async function readRateLimitStateObject(env) {
+  const object = await env.MEDIA_BUCKET.get(RATE_LIMIT_STATE_KEY);
+  if (!object) {
+    return null;
+  }
+  return JSON.parse(await object.text());
+}
+
+async function writeRateLimitStateObject(env, state) {
+  const normalizedState = {
+    version: 1,
+    buckets: state?.buckets || {}
+  };
+  rateLimitStateCache = cloneJson(normalizedState);
+  await env.MEDIA_BUCKET.put(RATE_LIMIT_STATE_KEY, JSON.stringify(normalizedState), {
+    httpMetadata: { contentType: "application/json; charset=utf-8" }
+  });
+}
+
+async function loadSiteState(env, { fresh = false } = {}) {
+  if (!fresh && siteStateCache) {
+    return cloneJson(siteStateCache);
+  }
+  let state = await readSiteStateObject(env);
+  if (!state) {
+    state = createEmptySiteState();
+    await writeSiteStateObject(env, state);
+    return cloneJson(state);
+  }
+  siteStateCache = cloneJson(state);
+  return cloneJson(state);
+}
+
+async function loadRateLimitState(env, { fresh = false } = {}) {
+  if (!fresh && rateLimitStateCache) {
+    return cloneJson(rateLimitStateCache);
+  }
+  let state = await readRateLimitStateObject(env);
+  if (!state) {
+    state = createEmptyRateLimitState();
+    await writeRateLimitStateObject(env, state);
+    return cloneJson(state);
+  }
+  rateLimitStateCache = cloneJson(state);
+  return cloneJson(state);
+}
+
+async function updateSiteState(env, mutator) {
+  const currentState = await loadSiteState(env, { fresh: true });
+  const nextState = await mutator(currentState) || currentState;
+  await writeSiteStateObject(env, nextState);
+  return cloneJson(nextState);
+}
+
+async function updateRateLimitState(env, mutator) {
+  const currentState = await loadRateLimitState(env, { fresh: true });
+  const nextState = await mutator(currentState) || currentState;
+  await writeRateLimitStateObject(env, nextState);
+  return cloneJson(nextState);
+}
+
+function getSiteSwordById(state, id) {
+  return (state.swords || []).find((row) => Number(row.id) === Number(id)) || null;
+}
+
+function getSiteSwordByCardId(state, cardId) {
+  const normalizedTarget = normalizeCardId(cardId);
+  return (state.swords || []).find((row) => normalizeCardId(row.card_id) === normalizedTarget) || null;
+}
+
+function getNextSwordId(state) {
+  return (state.swords || []).reduce((maxId, row) => Math.max(maxId, Number(row.id) || 0), 0) + 1;
+}
+
+function upsertSiteSwordRecord(rows, record) {
+  const nextRows = [...(rows || [])];
+  const rowIndex = nextRows.findIndex((row) => Number(row.id) === Number(record.id));
+  if (rowIndex >= 0) {
+    nextRows[rowIndex] = normalizeSiteSwordRecord(record);
+  } else {
+    nextRows.push(normalizeSiteSwordRecord(record));
+  }
+  return nextRows.sort((left, right) => Number(left.id) - Number(right.id));
+}
+
+function removeSiteSwordRecord(rows, id) {
+  return (rows || [])
+    .filter((row) => Number(row.id) !== Number(id))
+    .sort((left, right) => Number(left.id) - Number(right.id));
+}
+
+function buildSiteMediaDescriptorMap(state, baseKeys) {
+  const keyList = [...new Set((baseKeys || []).filter(Boolean))];
+  const mediaMap = new Map();
+  for (const key of keyList) {
+    const variant = state.mediaVariants?.[key];
+    if (variant) {
+      mediaMap.set(key, {
+        key,
+        kind: variant.mediaKind || inferMediaKindFromKey(variant.originalKey || key),
+        low: buildMediaUrl(variant.lowKey || variant.originalKey || key),
+        medium: buildMediaUrl(variant.mediumKey || variant.originalKey || key),
+        original: buildMediaUrl(variant.originalKey || key)
+      });
+      continue;
+    }
+    const mediaObject = state.mediaObjects?.[key];
+    mediaMap.set(key, {
+      key,
+      kind: inferMediaKindFromContentType(mediaObject?.contentType || "") || inferMediaKindFromKey(key),
+      low: buildMediaUrl(key),
+      medium: buildMediaUrl(key),
+      original: buildMediaUrl(key)
+    });
+  }
+  return mediaMap;
+}
+
 async function getSwordById(env, id) {
-  return env.DB.prepare(`
-    SELECT id, card_id, n, c, v, d, t, ct, u, descr, image_key, detail_image_key, slash_media_key, slash_audio_key, edited
-    FROM swords
-    WHERE id = ?
-  `).bind(id).first();
+  const state = await loadSiteState(env);
+  return getSiteSwordById(state, id);
 }
 
 async function getSwordByCardId(env, cardId) {
-  return env.DB.prepare(`
-    SELECT id, card_id, n, c, v, d, t, ct, u, descr, image_key, detail_image_key, slash_media_key, slash_audio_key, edited
-    FROM swords
-    WHERE card_id = ?
-  `).bind(cardId).first();
+  const state = await loadSiteState(env);
+  return getSiteSwordByCardId(state, cardId);
 }
 
 function serializeSword(row, mediaMap = new Map()) {
@@ -1334,14 +1803,45 @@ function serializeSword(row, mediaMap = new Map()) {
     detailMedia: buildMediaDescriptor(row.detail_image_key, mediaMap),
     slashMedia: buildMediaDescriptor(row.slash_media_key, mediaMap),
     slashAudio: buildMediaDescriptor(row.slash_audio_key, mediaMap),
+    finisherMedia: buildMediaDescriptor(row.finisher_media_key, mediaMap),
+    ownersChoice: Boolean(row.owners_choice),
     edited: Boolean(row.edited)
+  };
+}
+
+function serializePrivateApiSword(row, mediaMap = new Map()) {
+  const sword = serializeSword(row, mediaMap);
+  if (!sword) {
+    return null;
+  }
+  return {
+    cardId: sword.cardId,
+    name: sword.n,
+    category: sword.c,
+    value: sword.v,
+    demand: sword.d,
+    trend: sword.t,
+    count: sword.ct,
+    updatedAt: sword.u,
+    description: sword.descr,
+    media: {
+      card: sword.img,
+      detail: sword.detailMedia,
+      slash: sword.slashMedia,
+      audio: sword.slashAudio,
+      finisher: sword.finisherMedia
+    },
+    flags: {
+      ownersChoice: sword.ownersChoice,
+      edited: sword.edited
+    }
   };
 }
 
 function collectSwordMediaKeys(rows) {
   const keys = new Set();
   for (const row of rows || []) {
-    [row.image_key, row.detail_image_key, row.slash_media_key, row.slash_audio_key].forEach((key) => {
+    [row.image_key, row.detail_image_key, row.slash_media_key, row.slash_audio_key, row.finisher_media_key].forEach((key) => {
       if (typeof key === "string" && key) {
         keys.add(key);
       }
@@ -1374,6 +1874,19 @@ function buildMediaUrl(key) {
   return `/media/${encodeURIComponent(key)}`;
 }
 
+function normalizeOwnersChoiceFlag(flag, value, count) {
+  const explicitFlag = flag === true || String(flag || "").trim().toLowerCase() === "true";
+  const explicitValue = String(value || "").trim().toLowerCase();
+  const ownersChoice = explicitFlag || explicitValue === "oc" || explicitValue === "o/c";
+  if (!ownersChoice) {
+    return false;
+  }
+  if (count === null || count === undefined || Number(count) >= 5) {
+    throw new HttpError(400, "Owner's Choice can only be used when count is below 5.");
+  }
+  return true;
+}
+
 function inferMediaKindFromKey(key) {
   const lowerKey = String(key || "").toLowerCase();
   if (/\.(mpeg|mp3|ogg|wav)$/i.test(lowerKey)) {
@@ -1386,18 +1899,22 @@ function inferMediaKindFromKey(key) {
 }
 
 function normalizeSwordPayload(body) {
+  const count = body.ct === null || body.ct === undefined || body.ct === "" ? null : clampInteger(body.ct, 0, 1_000_000, "Count");
+  const ownersChoice = normalizeOwnersChoiceFlag(body.oc, body.v, count);
   return {
     n: requireString(body.n, "Name"),
     c: requireEnum(body.c, CATEGORIES, "Category"),
-    v: clampInteger(body.v, 0, MAX_EDIT_VALUE, "Value"),
+    v: ownersChoice ? clampInteger(body.v ?? 0, 0, MAX_EDIT_VALUE, "Value") : clampInteger(body.v, 0, MAX_EDIT_VALUE, "Value"),
     d: requireEnum(body.d, DEMANDS, "Demand"),
     t: requireEnum(body.t, TRENDS, "Trend"),
-    ct: body.ct === null || body.ct === undefined || body.ct === "" ? null : clampInteger(body.ct, 0, 1_000_000, "Count"),
+    ct: count,
     descr: sanitizeOptionalString(body.descr, MAX_TEXT_LENGTH),
     img: body.img,
     detailMedia: body.detailMedia,
     slashMedia: body.slashMedia,
-    slashAudio: body.slashAudio
+    slashAudio: body.slashAudio,
+    finisherMedia: body.finisherMedia,
+    ownersChoice
   };
 }
 
@@ -1413,7 +1930,9 @@ function swordPayloadFromSnapshot(snapshot) {
     img: snapshot.img ?? null,
     detailMedia: snapshot.detailMedia ?? null,
     slashMedia: snapshot.slashMedia ?? null,
-    slashAudio: snapshot.slashAudio ?? null
+    slashAudio: snapshot.slashAudio ?? null,
+    finisherMedia: snapshot.finisherMedia ?? null,
+    oc: Boolean(snapshot.ownersChoice)
   };
 }
 
@@ -1423,52 +1942,58 @@ async function applySwordSnapshotUpdate(env, id, payload) {
     throw new HttpError(404, "Sword not found.");
   }
   const normalized = normalizeSwordPayload(payload);
-  const { image, detailMedia, slashMedia, slashAudio } = await persistSwordMedia(env, normalized, normalized.n, current);
-
-  await env.DB.prepare(`
-    UPDATE swords
-    SET n = ?, c = ?, v = ?, d = ?, t = ?, ct = ?, u = ?, descr = ?, image_key = ?, detail_image_key = ?, slash_media_key = ?, slash_audio_key = ?, edited = 1
-    WHERE id = ?
-  `).bind(
-    normalized.n,
-    normalized.c,
-    normalized.v,
-    normalized.d,
-    normalized.t,
-    normalized.ct,
-    currentDateString(),
-    normalized.descr,
-    image.mediaKey,
-    detailMedia.mediaKey,
-    slashMedia.mediaKey,
-    slashAudio.mediaKey,
-    id
-  ).run();
+  const { image, detailMedia, slashMedia, slashAudio, finisherMedia } = await persistSwordMedia(env, normalized, normalized.n, current);
+  const updated = normalizeSiteSwordRecord({
+    ...current,
+    n: normalized.n,
+    c: normalized.c,
+    v: normalized.v,
+    d: normalized.d,
+    t: normalized.t,
+    ct: normalized.ct,
+    u: currentUtcDateString(),
+    descr: normalized.descr,
+    image_key: image.mediaKey,
+    detail_image_key: detailMedia.mediaKey,
+    slash_media_key: slashMedia.mediaKey,
+    slash_audio_key: slashAudio.mediaKey,
+    finisher_media_key: finisherMedia.mediaKey,
+    owners_choice: normalized.ownersChoice ? 1 : 0,
+    edited: 1
+  });
+  await updateSiteState(env, (state) => ({
+    ...state,
+    swords: upsertSiteSwordRecord(state.swords, updated)
+  }));
 }
 
 async function restoreSwordSnapshot(env, snapshot) {
   const existing = await getSwordById(env, Number(snapshot.id));
   if (!existing) {
-    const { image, detailMedia, slashMedia, slashAudio } = await persistSwordMedia(env, swordPayloadFromSnapshot(snapshot), snapshot.n);
-    await env.DB.prepare(`
-      INSERT INTO swords (id, card_id, n, c, v, d, t, ct, u, descr, image_key, detail_image_key, slash_media_key, slash_audio_key, edited)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-    `).bind(
-      snapshot.id,
-      snapshot.cardId,
-      snapshot.n,
-      snapshot.c,
-      snapshot.v,
-      snapshot.d,
-      snapshot.t,
-      snapshot.ct,
-      currentDateString(),
-      snapshot.descr || "",
-      image.mediaKey,
-      detailMedia.mediaKey,
-      slashMedia.mediaKey,
-      slashAudio.mediaKey
-    ).run();
+    const { image, detailMedia, slashMedia, slashAudio, finisherMedia } = await persistSwordMedia(env, swordPayloadFromSnapshot(snapshot), snapshot.n);
+    const created = normalizeSiteSwordRecord({
+      id: snapshot.id,
+      card_id: snapshot.cardId,
+      n: snapshot.n,
+      c: snapshot.c,
+      v: snapshot.v,
+      d: snapshot.d,
+      t: snapshot.t,
+      ct: snapshot.ct,
+      u: currentUtcDateString(),
+      descr: snapshot.descr || "",
+      image_key: image.mediaKey,
+      detail_image_key: detailMedia.mediaKey,
+      slash_media_key: slashMedia.mediaKey,
+      slash_audio_key: slashAudio.mediaKey,
+      finisher_media_key: finisherMedia.mediaKey,
+      owners_choice: snapshot.ownersChoice ? 1 : 0,
+      edited: 1
+    });
+    await updateSiteState(env, (state) => ({
+      ...state,
+      swords: upsertSiteSwordRecord(state.swords, created)
+    }));
     return;
   }
 
@@ -1488,7 +2013,10 @@ async function persistSwordMedia(env, payload, swordName, existing = {}) {
   const slashAudio = payload.slashAudio !== undefined
     ? await persistMedia(env, payload.slashAudio, swordName, "slash-audio")
     : { mediaKey: existing.slash_audio_key || null };
-  return { image, detailMedia, slashMedia, slashAudio };
+  const finisherMedia = payload.finisherMedia !== undefined
+    ? await persistMedia(env, payload.finisherMedia, swordName, "finisher")
+    : { mediaKey: existing.finisher_media_key || null };
+  return { image, detailMedia, slashMedia, slashAudio, finisherMedia };
 }
 
 async function persistMedia(env, mediaInput, swordName, variant) {
@@ -1522,7 +2050,7 @@ async function persistMedia(env, mediaInput, swordName, variant) {
   }
 
   const baseKey = buildMediaSetKey(swordName, variant);
-  const variantKeys = buildVariantKeys(baseKey, parsed.extension);
+  const variantKeys = buildVariantKeys(baseKey, parsed.extension, variant);
   const isVariantFriendlyImage = parsed.kind === "image" && parsed.contentType !== "image/gif" && parsed.contentType !== "image/svg+xml";
 
   if (isVariantFriendlyImage) {
@@ -1576,7 +2104,7 @@ async function persistVariantMedia(env, mediaInput, swordName, variant) {
   }
 
   const baseKey = buildMediaSetKey(swordName, variant);
-  const variantKeys = buildVariantKeys(baseKey, parsedOriginal.extension);
+  const variantKeys = buildVariantKeys(baseKey, parsedOriginal.extension, variant);
   await Promise.all([
     upsertMediaRecord(env, variantKeys.low, parsedLow.contentType, parsedLow.bytes),
     upsertMediaRecord(env, variantKeys.medium, parsedMedium.contentType, parsedMedium.bytes),
@@ -1647,7 +2175,7 @@ function getMaxMediaBytes(variant, kind) {
   if (variant === "slash-audio") {
     return MAX_SFX_BYTES;
   }
-  if (variant === "detail" || variant === "slash") {
+  if (variant === "detail" || variant === "slash" || variant === "finisher") {
     return MAX_VISUAL_PREVIEW_BYTES;
   }
   return kind === "audio" || kind === "video" ? MAX_MEDIA_BYTES : MAX_IMAGE_BYTES;
@@ -1667,65 +2195,120 @@ function buildMediaSetKey(swordName, variant) {
   return `media/${slug}-${variant}-${crypto.randomUUID()}`;
 }
 
-function buildVariantKeys(baseKey, extension) {
+function getMediaFolderForVariant(variant) {
+  const folderMap = {
+    "card-image": "card",
+    detail: "vfx",
+    "slash-audio": "sfx",
+    slash: "slash",
+    finisher: "finisher"
+  };
+  return folderMap[variant] || "card";
+}
+
+function getMediaFolderForKey(mediaKey) {
+  const lowerKey = String(mediaKey || "").toLowerCase();
+  if (lowerKey.includes("-card-image-") || lowerKey.startsWith("swords/")) {
+    return "card";
+  }
+  if (lowerKey.includes("-slash-audio-")) {
+    return "sfx";
+  }
+  if (lowerKey.includes("-detail-")) {
+    return "vfx";
+  }
+  if (lowerKey.includes("-finisher-")) {
+    return "finisher";
+  }
+  if (lowerKey.includes("-slash-")) {
+    return "slash";
+  }
+  return "card";
+}
+
+function inferMediaQualityFromKey(mediaKey) {
+  const lowerKey = String(mediaKey || "").toLowerCase();
+  if (lowerKey.includes("--low.")) {
+    return "low";
+  }
+  if (lowerKey.includes("--medium.")) {
+    return "medium";
+  }
+  return "full";
+}
+
+function stripManagedMediaPrefix(mediaKey) {
+  return String(mediaKey || "").replace(/^(media|swords|card|vfx|sfx|slash|finisher)\//i, "");
+}
+
+function normalizeStoredMediaKey(mediaKey, variant = "", quality = "") {
+  const key = String(mediaKey || "");
+  if (!key) {
+    return key;
+  }
+  const managedMatch = key.match(/^(card|vfx|sfx|slash|finisher)\/(low|medium|full)\/(.+)$/i);
+  if (managedMatch) {
+    const existingQuality = managedMatch[2].toLowerCase();
+    const normalizedKey = stripManagedMediaPrefix(managedMatch[3]);
+    const mediaType = variant ? getMediaFolderForVariant(variant) : getMediaFolderForKey(normalizedKey);
+    const normalizedQuality = quality || existingQuality;
+    return `${mediaType}/${normalizedQuality}/${normalizedKey}`;
+  }
+  const mediaType = variant ? getMediaFolderForVariant(variant) : getMediaFolderForKey(key);
+  const normalizedKey = stripManagedMediaPrefix(key);
+  const normalizedQuality = quality || inferMediaQualityFromKey(key);
+  return `${mediaType}/${normalizedQuality}/${normalizedKey}`;
+}
+
+function buildVariantKeys(baseKey, extension, variant) {
   return {
-    low: `${baseKey}--low.${extension}`,
-    medium: `${baseKey}--medium.${extension}`,
-    original: `${baseKey}--original.${extension}`
+    low: normalizeStoredMediaKey(`${baseKey}--low.${extension}`, variant, "low"),
+    medium: normalizeStoredMediaKey(`${baseKey}--medium.${extension}`, variant, "medium"),
+    original: normalizeStoredMediaKey(`${baseKey}--original.${extension}`, variant, "full")
   };
 }
 
 async function upsertMediaRecord(env, mediaKey, contentType, bytes) {
-  const usesChunks = bytes.byteLength > D1_MEDIA_CHUNK_BYTES;
-  const statements = [env.DB.prepare(`
-    INSERT INTO sword_images (image_key, content_type, image_data, media_size, updated_at)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(image_key) DO UPDATE SET
-      content_type = excluded.content_type,
-      image_data = excluded.image_data,
-      media_size = excluded.media_size,
-      updated_at = excluded.updated_at
-  `).bind(
-    mediaKey,
-    contentType,
-    usesChunks ? new Uint8Array() : bytes,
-    bytes.byteLength,
-    currentIsoString()
-  ), env.DB.prepare("DELETE FROM media_chunks WHERE image_key = ?").bind(mediaKey)];
-
-  if (usesChunks) {
-    for (let offset = 0, chunkIndex = 0; offset < bytes.byteLength; offset += D1_MEDIA_CHUNK_BYTES, chunkIndex += 1) {
-      const chunk = bytes.slice(offset, offset + D1_MEDIA_CHUNK_BYTES);
-      statements.push(env.DB.prepare(`
-        INSERT INTO media_chunks (image_key, chunk_index, chunk_data)
-        VALUES (?, ?, ?)
-      `).bind(mediaKey, chunkIndex, chunk));
+  const state = await loadSiteState(env);
+  const previousSize = Number(state.mediaObjects?.[mediaKey]?.sizeBytes || 0);
+  await reserveR2Usage(env, 1, 0, bytes.byteLength - previousSize);
+  await env.MEDIA_BUCKET.put(mediaKey, bytes, {
+    httpMetadata: { contentType },
+    customMetadata: {
+      contentType,
+      mediaSize: String(bytes.byteLength)
     }
-  }
-
-  await env.DB.batch(statements);
+  });
+  await updateSiteState(env, (currentState) => ({
+    ...currentState,
+    mediaObjects: {
+      ...(currentState.mediaObjects || {}),
+      [mediaKey]: {
+        mediaKey,
+        contentType,
+        sizeBytes: bytes.byteLength,
+        updatedAt: currentIsoString()
+      }
+    }
+  }));
 }
 
 async function upsertMediaVariantSet(env, record) {
-  await env.DB.prepare(`
-    INSERT INTO media_variant_sets (base_key, media_kind, content_type, low_key, medium_key, original_key, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(base_key) DO UPDATE SET
-      media_kind = excluded.media_kind,
-      content_type = excluded.content_type,
-      low_key = excluded.low_key,
-      medium_key = excluded.medium_key,
-      original_key = excluded.original_key,
-      updated_at = excluded.updated_at
-  `).bind(
-    record.baseKey,
-    record.mediaKind,
-    record.contentType,
-    record.lowKey,
-    record.mediumKey,
-    record.originalKey,
-    currentIsoString()
-  ).run();
+  await updateSiteState(env, (currentState) => ({
+    ...currentState,
+    mediaVariants: {
+      ...(currentState.mediaVariants || {}),
+      [record.baseKey]: {
+        baseKey: record.baseKey,
+        mediaKind: record.mediaKind,
+        contentType: record.contentType,
+        lowKey: record.lowKey,
+        mediumKey: record.mediumKey,
+        originalKey: record.originalKey,
+        updatedAt: currentIsoString()
+      }
+    }
+  }));
 }
 
 async function loadMediaDescriptorMap(env, baseKeys) {
@@ -1733,64 +2316,8 @@ async function loadMediaDescriptorMap(env, baseKeys) {
   if (!keyList.length) {
     return new Map();
   }
-
-  const mediaMap = new Map();
-  const manifests = await selectByInClause(
-    env,
-    "SELECT base_key, media_kind, content_type, low_key, medium_key, original_key FROM media_variant_sets WHERE base_key IN",
-    keyList
-  );
-  for (const row of manifests) {
-    mediaMap.set(row.base_key, {
-      key: row.base_key,
-      kind: row.media_kind || inferMediaKindFromKey(row.original_key || row.base_key),
-      low: buildMediaUrl(row.low_key || row.original_key || row.base_key),
-      medium: buildMediaUrl(row.medium_key || row.original_key || row.base_key),
-      original: buildMediaUrl(row.original_key || row.base_key)
-    });
-  }
-
-  const missingKeys = keyList.filter((key) => !mediaMap.has(key));
-  if (!missingKeys.length) {
-    return mediaMap;
-  }
-
-  const originalRows = await selectByInClause(
-    env,
-    "SELECT image_key, content_type FROM sword_images WHERE image_key IN",
-    missingKeys
-  );
-  const contentTypeMap = new Map(originalRows.map((row) => [row.image_key, row.content_type]));
-  for (const key of missingKeys) {
-    const contentType = contentTypeMap.get(key) || "";
-    mediaMap.set(key, {
-      key,
-      kind: inferMediaKindFromContentType(contentType) || inferMediaKindFromKey(key),
-      low: buildMediaUrl(key),
-      medium: buildMediaUrl(key),
-      original: buildMediaUrl(key)
-    });
-  }
-
-  return mediaMap;
-}
-
-async function selectByInClause(env, sqlPrefix, values) {
-  if (!values.length) {
-    return [];
-  }
-  const results = [];
-  const chunkSize = 64;
-  for (let start = 0; start < values.length; start += chunkSize) {
-    const slice = values.slice(start, start + chunkSize);
-    const placeholders = slice.map(() => "?").join(", ");
-    const sql = `${sqlPrefix} (${placeholders})`;
-    const rows = await env.DB.prepare(sql).bind(...slice).all();
-    for (const row of rows.results || []) {
-      results.push(row);
-    }
-  }
-  return results;
+  const state = await loadSiteState(env);
+  return buildSiteMediaDescriptorMap(state, keyList);
 }
 
 function inferMediaKindFromContentType(contentType) {
@@ -1807,12 +2334,60 @@ function inferMediaKindFromContentType(contentType) {
   return "";
 }
 
+function getCurrentUsagePeriodKey() {
+  const now = new Date();
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+async function reserveR2Usage(env, classADelta, classBDelta, storageDeltaBytes) {
+  const periodKey = getCurrentUsagePeriodKey();
+  const now = currentIsoString();
+  await updateSiteState(env, (state) => {
+    const monthlyRow = state.usage?.monthly?.[periodKey] || {};
+    const nextClassA = Number(monthlyRow.classACount || 0) + Number(classADelta || 0);
+    const nextClassB = Number(monthlyRow.classBCount || 0) + Number(classBDelta || 0);
+    const nextStorage = Number(state.usage?.totalStorageBytes || 0) + Number(storageDeltaBytes || 0);
+
+    if (nextClassA > R2_CLASS_A_LIMIT) {
+      throw new HttpError(507, "R2 Class A limit reached for the current month.", {}, {
+        phase: "storage.r2_class_a_limit"
+      });
+    }
+    if (nextClassB > R2_CLASS_B_LIMIT) {
+      throw new HttpError(507, "R2 Class B limit reached for the current month.", {}, {
+        phase: "storage.r2_class_b_limit"
+      });
+    }
+    if (nextStorage > R2_STORAGE_LIMIT_BYTES) {
+      throw new HttpError(507, "R2 storage limit reached.", {}, {
+        phase: "storage.r2_storage_limit"
+      });
+    }
+
+    return {
+      ...state,
+      usage: {
+        monthly: {
+          ...(state.usage?.monthly || {}),
+          [periodKey]: {
+            classACount: nextClassA,
+            classBCount: nextClassB,
+            updatedAt: now
+          }
+        },
+        totalStorageBytes: nextStorage
+      }
+    };
+  });
+}
+
 function getMediaFieldLabel(variant) {
   const labels = {
     "card-image": "Card Media",
     detail: "VFX Preview",
     slash: "Slash Preview",
-    "slash-audio": "Slash Audio"
+    "slash-audio": "SFX Preview",
+    finisher: "Finisher Preview"
   };
   return labels[variant] || "Media";
 }
@@ -1961,8 +2536,8 @@ async function writeAuditLog(env, entry) {
     INSERT INTO audit_logs (actor_user_id, actor_role, action_type, entity_type, entity_id, entity_public_id, summary, diff_json, before_json, after_json, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
-    entry.actor?.id || entry.actor?.user?.id || null,
-    entry.actor?.role || entry.actor?.user?.role || null,
+    entry.actor?.isSystem ? null : (entry.actor?.id || entry.actor?.user?.id || null),
+    entry.actor?.isSystem ? SYSTEM_ACCOUNT_ROLE_LABEL : (entry.actor?.role || entry.actor?.user?.role || null),
     entry.actionType,
     entry.entityType,
     entry.entityId,
@@ -2014,22 +2589,37 @@ function summarizeValue(value) {
 }
 
 function serializeAuditLog(row) {
+  const isSystem = row.actor_role === SYSTEM_ACCOUNT_ROLE_LABEL;
   return {
     id: Number(row.id),
     actorUserId: row.actor_user_id === null || row.actor_user_id === undefined ? null : Number(row.actor_user_id),
     actorRole: row.actor_role || "",
-    actorUsername: row.actor_username || "",
-    actorGlobalName: row.actor_global_name || "",
+    actorUsername: isSystem ? "root" : (row.actor_username || ""),
+    actorGlobalName: isSystem ? SYSTEM_ACCOUNT_DISPLAY_NAME : (row.actor_global_name || ""),
     actionType: row.action_type,
     entityType: row.entity_type,
     entityId: row.entity_id === null || row.entity_id === undefined ? null : Number(row.entity_id),
     entityPublicId: row.entity_public_id || null,
     summary: row.summary || "",
-    diff: parseJsonField(row.diff_json) || [],
+    diff: normalizeAuditDiff(parseJsonField(row.diff_json)),
     before: parseJsonField(row.before_json),
     after: parseJsonField(row.after_json),
     createdAt: row.created_at
   };
+}
+
+function normalizeAuditDiff(value) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (value && typeof value === "object") {
+    return Object.entries(value).map(([field, next]) => ({
+      field,
+      from: next?.from ?? null,
+      to: next?.to ?? null
+    }));
+  }
+  return [];
 }
 
 function parseJsonField(value) {
@@ -2043,10 +2633,11 @@ function parseJsonField(value) {
   }
 }
 
-async function generateUniqueCardId(env) {
+async function generateUniqueCardId(env, state = null) {
+  const currentState = state || await loadSiteState(env);
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const next = `${CARD_ID_PREFIX}${generateRandomCardIdBody()}`;
-    const existing = await env.DB.prepare("SELECT id FROM swords WHERE card_id = ?").bind(next).first();
+    const existing = getSiteSwordByCardId(currentState, next);
     if (!existing) {
       return next;
     }
@@ -2068,70 +2659,6 @@ async function ensureCoreSchema(env) {
   if (!coreSchemaReadyPromise) {
     coreSchemaReadyPromise = (async () => {
       const createStatements = [
-        `CREATE TABLE IF NOT EXISTS swords (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          n TEXT NOT NULL,
-          c TEXT NOT NULL,
-          v INTEGER NOT NULL,
-          d TEXT NOT NULL,
-          t TEXT NOT NULL,
-          ct INTEGER,
-          u TEXT NOT NULL,
-          descr TEXT NOT NULL DEFAULT '',
-          image_key TEXT,
-          edited INTEGER NOT NULL DEFAULT 0 CHECK (edited IN (0, 1))
-        )`,
-        `CREATE TABLE IF NOT EXISTS sword_baseline (
-          id INTEGER PRIMARY KEY,
-          n TEXT NOT NULL,
-          c TEXT NOT NULL,
-          v INTEGER NOT NULL,
-          d TEXT NOT NULL,
-          t TEXT NOT NULL,
-          ct INTEGER,
-          u TEXT NOT NULL,
-          descr TEXT NOT NULL DEFAULT '',
-          image_key TEXT,
-          edited INTEGER NOT NULL DEFAULT 0 CHECK (edited IN (0, 1))
-        )`,
-        `CREATE TABLE IF NOT EXISTS sword_images (
-          image_key TEXT PRIMARY KEY,
-          content_type TEXT NOT NULL,
-          image_data BLOB NOT NULL,
-          media_size INTEGER,
-          updated_at TEXT NOT NULL
-        )`,
-        `CREATE TABLE IF NOT EXISTS media_chunks (
-          image_key TEXT NOT NULL,
-          chunk_index INTEGER NOT NULL,
-          chunk_data BLOB NOT NULL,
-          PRIMARY KEY (image_key, chunk_index)
-        )`,
-        `CREATE TABLE IF NOT EXISTS media_variant_sets (
-          base_key TEXT PRIMARY KEY,
-          media_kind TEXT NOT NULL,
-          content_type TEXT NOT NULL,
-          low_key TEXT NOT NULL,
-          medium_key TEXT NOT NULL,
-          original_key TEXT NOT NULL,
-          updated_at TEXT NOT NULL
-        )`,
-        `CREATE TABLE IF NOT EXISTS admin_config (
-          config_key TEXT PRIMARY KEY,
-          secret TEXT NOT NULL,
-          issuer TEXT NOT NULL,
-          account_label TEXT NOT NULL,
-          digits INTEGER NOT NULL,
-          period INTEGER NOT NULL,
-          updated_at TEXT NOT NULL
-        )`,
-        `CREATE TABLE IF NOT EXISTS rate_limits (
-          bucket TEXT NOT NULL,
-          limiter_key TEXT NOT NULL,
-          request_count INTEGER NOT NULL DEFAULT 0,
-          window_start INTEGER NOT NULL,
-          PRIMARY KEY (bucket, limiter_key)
-        )`,
         `CREATE TABLE IF NOT EXISTS users (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           discord_user_id TEXT NOT NULL UNIQUE,
@@ -2159,12 +2686,6 @@ async function ensureCoreSchema(env) {
           after_json TEXT,
           created_at TEXT NOT NULL
         )`,
-        "CREATE INDEX IF NOT EXISTS idx_swords_category ON swords (c)",
-        "CREATE INDEX IF NOT EXISTS idx_swords_value ON swords (v DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_sword_baseline_category ON sword_baseline (c)",
-        "CREATE INDEX IF NOT EXISTS idx_sword_images_updated_at ON sword_images (updated_at)",
-        "CREATE INDEX IF NOT EXISTS idx_media_variant_sets_updated_at ON media_variant_sets (updated_at)",
-        "CREATE INDEX IF NOT EXISTS idx_rate_limits_window_start ON rate_limits (window_start)",
         "CREATE INDEX IF NOT EXISTS idx_users_role_sort ON users (role_sort DESC, updated_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs (created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_audit_logs_entity_public_id ON audit_logs (entity_public_id)"
@@ -2174,20 +2695,6 @@ async function ensureCoreSchema(env) {
         await env.DB.prepare(statement).run();
       }
 
-      await ensureColumn(env, "swords", "card_id", "TEXT");
-      await ensureColumn(env, "swords", "detail_image_key", "TEXT");
-      await ensureColumn(env, "swords", "slash_media_key", "TEXT");
-      await ensureColumn(env, "swords", "slash_audio_key", "TEXT");
-      await ensureColumn(env, "sword_images", "media_size", "INTEGER");
-      await ensureColumn(env, "sword_baseline", "card_id", "TEXT");
-      await ensureColumn(env, "sword_baseline", "detail_image_key", "TEXT");
-      await ensureColumn(env, "sword_baseline", "slash_media_key", "TEXT");
-      await ensureColumn(env, "sword_baseline", "slash_audio_key", "TEXT");
-
-      await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_swords_card_id ON swords (card_id)").run();
-      await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_sword_baseline_card_id ON sword_baseline (card_id)").run();
-
-      await backfillCardIds(env);
       await backfillRoleSorts(env);
     })().catch((error) => {
       coreSchemaReadyPromise = null;
@@ -2196,38 +2703,6 @@ async function ensureCoreSchema(env) {
   }
 
   await coreSchemaReadyPromise;
-}
-
-async function ensureColumn(env, tableName, columnName, columnSql) {
-  const tableInfo = await env.DB.prepare(`PRAGMA table_info(${tableName})`).all();
-  const exists = (tableInfo.results || []).some((row) => row.name === columnName);
-  if (!exists) {
-    await env.DB.prepare(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnSql}`).run();
-  }
-}
-
-async function backfillCardIds(env) {
-  const { results } = await env.DB.prepare(`
-    SELECT s.id, s.card_id, b.card_id AS baseline_card_id
-    FROM swords s
-    LEFT JOIN sword_baseline b ON b.id = s.id
-    WHERE s.card_id IS NULL OR s.card_id = '' OR b.card_id IS NULL OR b.card_id = ''
-    ORDER BY s.id ASC
-  `).all();
-
-  const rowsToUpdate = [];
-  for (const row of results || []) {
-    const nextCardId = row.card_id || row.baseline_card_id || await generateUniqueCardId(env);
-    rowsToUpdate.push({ id: row.id, nextCardId });
-  }
-
-  const statements = rowsToUpdate.flatMap(({ id, nextCardId }) => ([
-    env.DB.prepare("UPDATE swords SET card_id = ? WHERE id = ?").bind(nextCardId, id),
-    env.DB.prepare("UPDATE sword_baseline SET card_id = ? WHERE id = ?").bind(nextCardId, id)
-  ]));
-  if (statements.length) {
-    await env.DB.batch(statements);
-  }
 }
 
 async function backfillRoleSorts(env) {
@@ -2267,6 +2742,23 @@ function parseCardIdPath(pathname, prefix) {
   return cardId;
 }
 
+function parseDeepLinkCardId(pathname) {
+  const match = pathname.match(new RegExp(`^/([${CARD_ID_ALPHABET}]{${CARD_ID_LENGTH}})/?$`));
+  return match ? `${CARD_ID_PREFIX}${match[1]}` : null;
+}
+
+function parseMetaItemCardIdPath(pathname) {
+  const match = pathname.match(new RegExp(`^/meta/item/([${CARD_ID_ALPHABET}]{${CARD_ID_LENGTH}})\\.svg$`));
+  if (!match) {
+    throw new HttpError(400, "Card ID is invalid.");
+  }
+  return `${CARD_ID_PREFIX}${match[1]}`;
+}
+
+function normalizeCardId(cardId) {
+  return String(cardId || "").trim().toUpperCase();
+}
+
 function decodePathSegment(value, label) {
   try {
     return decodeURIComponent(value);
@@ -2279,33 +2771,35 @@ function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function parsePublicSwordQuery(url) {
-  const category = url.searchParams.get("category") || "";
+function parsePrivateSwordQuery(url) {
+  const category = sanitizeOptionalEnum(url.searchParams.get("category") || url.searchParams.get("badge") || "", CATEGORIES, "Category");
+  const demand = sanitizeOptionalEnum(url.searchParams.get("demand") || "", DEMANDS, "Demand");
+  const trend = sanitizeOptionalEnum(url.searchParams.get("trend") || "", TRENDS, "Trend");
+  const cardId = normalizeCardIdSearchValue(url.searchParams.get("cardId") || url.searchParams.get("id") || "");
   const search = (url.searchParams.get("search") || "").trim().toLowerCase();
   const sort = url.searchParams.get("sort") || "value-desc";
   const limit = parseBoundedQueryInteger(url.searchParams.get("limit"), PUBLIC_API_DEFAULT_LIMIT, 1, PUBLIC_API_LIMIT, "limit");
   const offset = parseBoundedQueryInteger(url.searchParams.get("offset"), 0, 0, PUBLIC_API_MAX_OFFSET, "offset");
-  if (category && category !== "All" && !CATEGORIES.has(category)) {
-    throw new HttpError(400, "Category is invalid.");
-  }
   if (search.length > 100) {
     throw new HttpError(400, "Search is too long.");
   }
-  if (!["value-desc", "value-asc", "name-asc", "updated-desc"].includes(sort)) {
+  if (cardId && !/^[a-z0-9]{6}$/i.test(cardId)) {
+    throw new HttpError(400, "Card ID is invalid.");
+  }
+  if (!["value-desc", "value-asc", "name-asc", "updated-desc", "count-desc", "count-asc", "demand-desc", "demand-asc", "trend-rank"].includes(sort)) {
     throw new HttpError(400, "Sort is invalid.");
   }
+  return { cardId, category, demand, limit, offset, search, sort, trend };
+}
 
-  const bindings = [];
-  const where = [];
-  if (category && category !== "All") {
-    where.push("c = ?");
-    bindings.push(category);
-  }
-  if (search) {
-    where.push("LOWER(n) LIKE ?");
-    bindings.push(`%${search}%`);
-  }
-  return { bindings, limit, offset, sortSql: getSortSql(sort), where };
+function filterPrivateSwordRows(rows, query) {
+  return [...(rows || [])]
+    .filter((row) => !query.category || query.category === "All" || row.c === query.category)
+    .filter((row) => !query.cardId || normalizeCardIdSearchValue(row.card_id) === query.cardId)
+    .filter((row) => !query.demand || String(row.d || "") === query.demand)
+    .filter((row) => !query.trend || String(row.t || "") === query.trend)
+    .filter((row) => matchesSwordSearch(row, query.search))
+    .sort(getSwordSorter(query.sort));
 }
 
 function parseBoundedQueryInteger(value, defaultValue, min, max, label) {
@@ -2375,6 +2869,16 @@ function sanitizeOptionalString(value, limit) {
   return value.trim().slice(0, limit);
 }
 
+function sanitizeOptionalEnum(value, allowed, label) {
+  if (value === null || value === undefined || value === "") {
+    return "";
+  }
+  if (typeof value !== "string" || !allowed.has(value)) {
+    throw new HttpError(400, `${label} is invalid.`);
+  }
+  return value;
+}
+
 function requireEnum(value, allowed, label) {
   if (typeof value !== "string" || !allowed.has(value)) {
     throw new HttpError(400, `${label} is invalid.`);
@@ -2390,18 +2894,125 @@ function clampInteger(value, min, max, label) {
   return number;
 }
 
-function getSortSql(sort) {
+function getSwordSorter(sort) {
   switch (sort) {
+    case "count-desc":
+      return (left, right) => compareNullableNumbers(right.ct, left.ct) || Number(left.id) - Number(right.id);
+    case "count-asc":
+      return (left, right) => compareNullableNumbers(left.ct, right.ct) || Number(left.id) - Number(right.id);
+    case "demand-desc":
+      return (left, right) => getDemandRank(right.d) - getDemandRank(left.d) || Number(right.v) - Number(left.v) || Number(left.id) - Number(right.id);
+    case "demand-asc":
+      return (left, right) => getDemandRank(left.d) - getDemandRank(right.d) || Number(right.v) - Number(left.v) || Number(left.id) - Number(right.id);
+    case "trend-rank":
+      return (left, right) => getTrendRank(right.t) - getTrendRank(left.t) || Number(right.v) - Number(left.v) || Number(left.id) - Number(right.id);
     case "value-asc":
-      return "ORDER BY v ASC, id ASC";
+      return (left, right) => Number(left.v) - Number(right.v) || Number(left.id) - Number(right.id);
     case "name-asc":
-      return "ORDER BY n COLLATE NOCASE ASC, id ASC";
+      return (left, right) => String(left.n || "").localeCompare(String(right.n || ""), undefined, { sensitivity: "base" }) || Number(left.id) - Number(right.id);
     case "updated-desc":
-      return "ORDER BY u DESC, id ASC";
+      return (left, right) => String(right.u || "").localeCompare(String(left.u || "")) || Number(left.id) - Number(right.id);
     case "value-desc":
     default:
-      return "ORDER BY v DESC, id ASC";
+      return (left, right) => Number(right.v) - Number(left.v) || Number(left.id) - Number(right.id);
   }
+}
+
+function compareNullableNumbers(left, right) {
+  const normalizedLeft = left === null || left === undefined ? Number.NEGATIVE_INFINITY : Number(left);
+  const normalizedRight = right === null || right === undefined ? Number.NEGATIVE_INFINITY : Number(right);
+  return normalizedLeft - normalizedRight;
+}
+
+function getDemandRank(value) {
+  return DEMAND_SORT_RANK[String(value || "N/A")] ?? DEMAND_SORT_RANK["N/A"];
+}
+
+function getTrendRank(value) {
+  return TREND_SORT_RANK[String(value || "N/A")] ?? TREND_SORT_RANK["N/A"];
+}
+
+function normalizeSearchText(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizeCardIdSearchValue(value) {
+  return normalizeSearchText(value).replace(/^#+/, "");
+}
+
+function matchesSwordSearch(row, query) {
+  const normalizedQuery = normalizeSearchText(query);
+  if (!normalizedQuery) {
+    return true;
+  }
+  const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
+  const searchIndex = buildSwordSearchIndex(row);
+  return tokens.every((token) => matchSwordSearchToken(searchIndex, token));
+}
+
+function buildSwordSearchIndex(row) {
+  const cardId = normalizeCardIdSearchValue(row.card_id);
+  const rarityValues = [
+    row?.rarity,
+    row?.r,
+    row?.rar,
+    row?.tier
+  ].filter(Boolean).map(normalizeSearchText);
+  const category = normalizeSearchText(row.c);
+  const badgeValues = [category];
+  if (category === "emotes" || category === "emote") {
+    badgeValues.push("emote", "emotes");
+  }
+  const fieldMap = {
+    id: [cardId, normalizeSearchText(row.card_id)],
+    badge: badgeValues,
+    category: badgeValues,
+    trend: [normalizeSearchText(row.t)],
+    demand: [normalizeSearchText(row.d)],
+    rarity: rarityValues,
+    count: [row.ct === null || row.ct === undefined ? "" : String(row.ct)],
+    name: [normalizeSearchText(row.n)]
+  };
+  return {
+    fieldMap,
+    generalFields: [
+      normalizeSearchText(row.n),
+      normalizeSearchText(row.card_id),
+      cardId,
+      category,
+      normalizeSearchText(row.d),
+      normalizeSearchText(row.t),
+      normalizeSearchText(row.descr),
+      ...rarityValues,
+      ...fieldMap.count.filter(Boolean)
+    ]
+  };
+}
+
+function matchSwordSearchToken(searchIndex, token) {
+  const normalizedToken = normalizeSearchText(token);
+  if (!normalizedToken) {
+    return true;
+  }
+  const structuredMatch = normalizedToken.match(/^([a-z]+):(.*)$/);
+  if (structuredMatch) {
+    const [, rawField, rawValue] = structuredMatch;
+    const field = rawField === "cat" ? "category" : rawField;
+    const value = normalizeSearchText(rawValue);
+    if (!value) {
+      return true;
+    }
+    const fields = searchIndex.fieldMap[field];
+    if (!fields) {
+      return searchIndex.generalFields.some((entry) => entry.includes(normalizedToken));
+    }
+    return fields.some((entry) => normalizeSearchText(entry).includes(value));
+  }
+  const normalizedId = normalizeCardIdSearchValue(normalizedToken);
+  if (/^[a-z0-9]{6}$/i.test(normalizedId)) {
+    return searchIndex.fieldMap.id.some((entry) => normalizeCardIdSearchValue(entry) === normalizedId);
+  }
+  return searchIndex.generalFields.some((entry) => entry.includes(normalizedToken));
 }
 
 function requireEnv(env, key) {
@@ -2422,8 +3033,8 @@ function json(body, status = 200, extraHeaders = {}) {
   });
 }
 
-function publicApiJson(body, status = 200) {
-  return json(body, status, { "cache-control": "public, max-age=60" });
+function privateApiJson(body, status = 200) {
+  return json(body, status, { "cache-control": "no-store" });
 }
 
 function methodNotAllowed(methods) {
@@ -2452,7 +3063,7 @@ function buildRobotsText(request, env) {
 
 function buildLlmsText(request, env) {
   const siteUrl = (env.PUBLIC_SITE_URL || new URL(request.url).origin).replace(/\/+$/g, "");
-  const siteName = env.SITE_NAME || "BBTSL Blade Ball Value List";
+  const siteName = env.SITE_NAME || "BBTSL Blade Ball Top Spender List";
   return [
     `# ${siteName}`,
     "",
@@ -2465,7 +3076,6 @@ function buildLlmsText(request, env) {
     "",
     `- [Website](${siteUrl}/)`,
     `- [Team](${siteUrl}/team)`,
-    `- [Public API](${siteUrl}/api/v1/swords)`,
     `- [Sitemap](${siteUrl}/sitemap.xml)`,
     `- [Full site guide](${siteUrl}/llms-full.txt)`
   ].join("\n");
@@ -2473,7 +3083,7 @@ function buildLlmsText(request, env) {
 
 function buildLlmsFullText(request, env) {
   const siteUrl = (env.PUBLIC_SITE_URL || new URL(request.url).origin).replace(/\/+$/g, "");
-  const siteName = env.SITE_NAME || "BBTSL Blade Ball Value List";
+  const siteName = env.SITE_NAME || "BBTSL Blade Ball Top Spender List";
   return [
     `# ${siteName}`,
     "",
@@ -2489,37 +3099,259 @@ function buildLlmsFullText(request, env) {
     "- Detail modal with richer media such as item animation, slash media, and slash audio when available.",
     "",
     "## Machine-readable endpoints",
-    `- [Bot API health](${siteUrl}/api/v1/health)`,
-    `- [Bot API sword list](${siteUrl}/api/v1/swords)`,
-    `- [Bot API team](${siteUrl}/api/v1/team)`,
     `- [Robots](${siteUrl}/robots.txt)`,
     `- [Sitemap](${siteUrl}/sitemap.xml)`,
     `- [LLM summary](${siteUrl}/llms.txt)`,
     "",
     "## Notes",
-    "- Public data is readable without authentication.",
+    "- The website data view is public.",
     "- Discord OAuth is used for website sign-in.",
+    "- Private integrations use a separate authenticated API surface.",
     "- Staff actions are permission-gated and audit logged."
   ].join("\n");
 }
 
 async function injectDynamicHeadMarkup(html, request, env, nonce) {
   const siteUrl = (env.PUBLIC_SITE_URL || new URL(request.url).origin).replace(/\/+$/g, "");
-  const pageUrl = `${siteUrl}${getCanonicalPagePath(request)}`;
-  const imageUrl = `${siteUrl}/og-image.png`;
+  const pageContext = await buildPageMetaContext(request, env, siteUrl);
 
   const markup = [
-    `<link rel="canonical" href="${pageUrl}">`,
-    `<meta property="og:url" content="${pageUrl}">`,
-    `<meta property="og:image" content="${imageUrl}">`,
-    `<meta property="og:image:type" content="image/png">`,
-    `<meta property="og:image:alt" content="BBTSL Blade Ball Value List preview image">`,
-    `<meta name="twitter:image" content="${imageUrl}">`,
-    `<meta name="twitter:image:alt" content="BBTSL Blade Ball Value List preview image">`,
+    `<link rel="canonical" href="${pageContext.url}">`,
+    `<link rel="icon" type="image/png" href="${pageContext.iconUrl}">`,
+    `<link rel="shortcut icon" href="${pageContext.iconUrl}">`,
+    `<link rel="apple-touch-icon" href="${pageContext.iconUrl}">`,
+    `<meta property="og:site_name" content="BBTSL">`,
+    `<meta property="og:url" content="${pageContext.url}">`,
+    `<meta property="og:image" content="${pageContext.imageUrl}">`,
+    `<meta property="og:image:secure_url" content="${pageContext.imageUrl}">`,
+    `<meta property="og:image:type" content="${pageContext.imageType}">`,
+    `<meta property="og:image:width" content="${pageContext.imageWidth}">`,
+    `<meta property="og:image:height" content="${pageContext.imageHeight}">`,
+    `<meta property="og:image:alt" content="${escapeHtmlAttribute(pageContext.imageAlt)}">`,
+    `<meta name="twitter:image" content="${pageContext.imageUrl}">`,
+    `<meta name="twitter:image:alt" content="${escapeHtmlAttribute(pageContext.imageAlt)}">`,
+    `<script type="application/ld+json">${JSON.stringify(pageContext.structuredData)}</script>`,
     await buildLcpPreloadMarkup(request, env)
   ].join("");
 
-  return addScriptNonces(html.replace('<meta name="bbtsl-dynamic-meta" content="">', markup), nonce);
+  const withHeadTags = html
+    .replace(/<title>.*?<\/title>/i, `<title>${escapeHtmlContent(pageContext.title)}</title>`)
+    .replace(/<meta name="description" content="[^"]*">/i, `<meta name="description" content="${escapeHtmlAttribute(pageContext.description)}">`)
+    .replace(/<meta name="theme-color" content="[^"]*">/i, `<meta name="theme-color" content="${escapeHtmlAttribute(pageContext.themeColor)}">`)
+    .replace(/<meta property="og:title" content="[^"]*">/i, `<meta property="og:title" content="${escapeHtmlAttribute(pageContext.title)}">`)
+    .replace(/<meta property="og:description" content="[^"]*">/i, `<meta property="og:description" content="${escapeHtmlAttribute(pageContext.description)}">`)
+    .replace(/<meta name="twitter:card" content="[^"]*">/i, `<meta name="twitter:card" content="${escapeHtmlAttribute(pageContext.twitterCard)}">`)
+    .replace(/<meta name="twitter:title" content="[^"]*">/i, `<meta name="twitter:title" content="${escapeHtmlAttribute(pageContext.title)}">`)
+    .replace(/<meta name="twitter:description" content="[^"]*">/i, `<meta name="twitter:description" content="${escapeHtmlAttribute(pageContext.description)}">`);
+  return addScriptNonces(withHeadTags.replace('<meta name="bbtsl-dynamic-meta" content="">', markup), nonce);
+}
+
+async function buildPageMetaContext(request, env, siteUrl) {
+  const itemCardId = getRequestedItemCardId(request);
+  const basePath = getCanonicalBasePath(request);
+  const defaultContext = {
+    title: "Blade Ball Top Spender List",
+    description: "Track and search Blade Ball Top Spender Items in one place.",
+    url: `${siteUrl}${basePath}`,
+    iconUrl: `${siteUrl}/og-image.png`,
+    imageUrl: `${siteUrl}/og-image.png`,
+    imageType: "image/png",
+    imageWidth: "1200",
+    imageHeight: "630",
+    imageAlt: "Blade Ball Top Spender List preview image",
+    themeColor: "#12151a",
+    twitterCard: "summary_large_image",
+    structuredData: {
+      "@context": "https://schema.org",
+      "@type": "CollectionPage",
+      name: "Blade Ball Top Spender List",
+      description: "Track and search Blade Ball Top Spender Items in one place.",
+      url: `${siteUrl}/`
+    }
+  };
+  if (!itemCardId || basePath !== "/") {
+    return defaultContext;
+  }
+  const state = await loadSiteState(env);
+  const row = getSiteSwordByCardId(state, itemCardId);
+  if (!row) {
+    return defaultContext;
+  }
+  const mediaMap = buildSiteMediaDescriptorMap(state, collectSwordMediaKeys([row]));
+  const sword = serializeSword(row, mediaMap);
+  const valueLabel = sword.ownersChoice ? "Owner's Choice" : formatMetaValue(sword.v);
+  const countLabel = sword.ct === null || sword.ct === undefined ? "-" : String(sword.ct);
+  const themeColor = getMetaValueAccent(state, sword.v);
+  const title = sword.n;
+  const description = [
+    sword.c,
+    `Value: ${valueLabel} Tokens`,
+    `Demand: ${sword.d}`,
+    `Trend: ${sword.t}`,
+    `Count: ${countLabel}`
+  ].join("\n");
+  const imageUrl = sword.img?.kind === "image"
+    ? (sword.img.original || sword.img.medium || sword.img.low || defaultContext.imageUrl)
+    : defaultContext.imageUrl;
+  return {
+    title,
+    description,
+    url: `${siteUrl}/?item=${encodeURIComponent(String(sword.cardId || "").replace(/^#/, ""))}`,
+    iconUrl: defaultContext.iconUrl,
+    imageUrl,
+    imageType: detectMetaImageType(imageUrl),
+    imageWidth: sword.img?.kind === "image" ? "512" : defaultContext.imageWidth,
+    imageHeight: sword.img?.kind === "image" ? "512" : defaultContext.imageHeight,
+    imageAlt: `${sword.n} sword preview`,
+    themeColor,
+    twitterCard: "summary_large_image",
+    structuredData: {
+      "@context": "https://schema.org",
+      "@type": "Thing",
+      name: sword.n,
+      description,
+      url: `${siteUrl}/?item=${encodeURIComponent(String(sword.cardId || "").replace(/^#/, ""))}`,
+      image: imageUrl,
+      identifier: sword.cardId,
+      category: sword.c,
+      additionalProperty: [
+        { "@type": "PropertyValue", name: "Demand", value: sword.d },
+        { "@type": "PropertyValue", name: "Trend", value: sword.t },
+        { "@type": "PropertyValue", name: "Count", value: countLabel },
+        { "@type": "PropertyValue", name: "Value", value: valueLabel }
+      ]
+    }
+  };
+}
+
+function getRequestedItemCardId(request) {
+  const url = new URL(request.url);
+  const value = sanitizeOptionalString(url.searchParams.get("item"), CARD_ID_LENGTH);
+  if (!value || !new RegExp(`^[${CARD_ID_ALPHABET}]{${CARD_ID_LENGTH}}$`).test(value)) {
+    return null;
+  }
+  return `${CARD_ID_PREFIX}${value}`;
+}
+
+function formatMetaValue(value) {
+  return Number(value || 0).toLocaleString("en-US");
+}
+
+function detectMetaImageType(url) {
+  const lowerUrl = String(url || "").split("?")[0].toLowerCase();
+  if (lowerUrl.endsWith(".webp")) {
+    return "image/webp";
+  }
+  if (lowerUrl.endsWith(".jpg") || lowerUrl.endsWith(".jpeg")) {
+    return "image/jpeg";
+  }
+  if (lowerUrl.endsWith(".gif")) {
+    return "image/gif";
+  }
+  return "image/png";
+}
+
+function getMetaValueAccent(state, value) {
+  const values = (state.swords || []).map((row) => Number(row.v || 0));
+  if (!values.length) {
+    return VALUE_BAR_STOPS[0];
+  }
+  const minValue = Math.min(...values);
+  const maxValue = Math.max(...values);
+  const range = maxValue - minValue;
+  const position = range <= 0 ? 0 : (Number(value || 0) - minValue) / range;
+  const index = Math.min(VALUE_BAR_STOPS.length - 1, Math.max(0, Math.floor(position * (VALUE_BAR_STOPS.length - 1))));
+  return VALUE_BAR_STOPS[index];
+}
+
+function buildItemMetaSvg(sword) {
+  const categoryColor = CATEGORY_COLOR_MAP[sword.c] || "#7d8aa3";
+  const valueColor = sword.ownersChoice ? "#f4cf5c" : "#ff8a3d";
+  const title = escapeSvgText(sword.n || "Unknown Item");
+  const cardId = escapeSvgText(sword.cardId || "#------");
+  const category = escapeSvgText(sword.c || "Item");
+  const demand = escapeSvgText(sword.d || "N/A");
+  const trend = escapeSvgText(sword.t || "N/A");
+  const count = escapeSvgText(sword.ct === null || sword.ct === undefined ? "-" : String(sword.ct));
+  const value = escapeSvgText(sword.ownersChoice ? "Owner's Choice" : formatMetaValue(sword.v));
+  const imageUrl = sword.img?.kind === "image" ? escapeSvgAttribute(sword.img.original || sword.img.medium || sword.img.low || "") : "";
+  const imageMarkup = imageUrl
+    ? `<g><rect x="822" y="108" width="286" height="414" rx="32" fill="rgba(255,255,255,.04)" stroke="rgba(255,255,255,.08)"/><image href="${imageUrl}" x="840" y="126" width="250" height="378" preserveAspectRatio="xMidYMid meet"/></g>`
+    : `<g><rect x="822" y="108" width="286" height="414" rx="32" fill="rgba(255,255,255,.04)" stroke="rgba(255,255,255,.08)"/><text x="965" y="322" fill="#9aa4b7" font-family="'IBM Plex Sans', Arial, sans-serif" font-size="28" text-anchor="middle">No image</text></g>`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1d2330"/>
+      <stop offset="100%" stop-color="#10141b"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="${categoryColor}"/>
+      <stop offset="100%" stop-color="${valueColor}"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="18" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1200" height="12" fill="url(#accent)"/>
+  <circle cx="145" cy="540" r="180" fill="${categoryColor}" opacity=".14" filter="url(#glow)"/>
+  <circle cx="1055" cy="76" r="124" fill="${valueColor}" opacity=".1" filter="url(#glow)"/>
+  <text x="78" y="88" fill="#d7deeb" font-family="'IBM Plex Sans', Arial, sans-serif" font-size="24" font-weight="700" letter-spacing="4">BBTSL</text>
+  <text x="78" y="158" fill="#f6f8fb" font-family="'Rajdhani', Arial, sans-serif" font-size="64" font-weight="700">${title}</text>
+  <text x="78" y="202" fill="${categoryColor}" font-family="'JetBrains Mono', monospace" font-size="28" font-weight="700">${cardId}</text>
+  <text x="78" y="268" fill="#d0d7e4" font-family="'IBM Plex Sans', Arial, sans-serif" font-size="26">${category}</text>
+  <text x="78" y="336" fill="${valueColor}" font-family="'JetBrains Mono', monospace" font-size="52" font-weight="700">${value}</text>
+  <g transform="translate(78 398)">
+    <rect width="188" height="86" rx="22" fill="rgba(255,255,255,.04)" stroke="rgba(255,255,255,.08)"/>
+    <text x="24" y="30" fill="#8e99ad" font-family="'JetBrains Mono', monospace" font-size="18" letter-spacing="2">DEMAND</text>
+    <text x="24" y="62" fill="#f6f8fb" font-family="'IBM Plex Sans', Arial, sans-serif" font-size="28" font-weight="700">${demand}</text>
+  </g>
+  <g transform="translate(286 398)">
+    <rect width="188" height="86" rx="22" fill="rgba(255,255,255,.04)" stroke="rgba(255,255,255,.08)"/>
+    <text x="24" y="30" fill="#8e99ad" font-family="'JetBrains Mono', monospace" font-size="18" letter-spacing="2">TREND</text>
+    <text x="24" y="62" fill="#f6f8fb" font-family="'IBM Plex Sans', Arial, sans-serif" font-size="28" font-weight="700">${trend}</text>
+  </g>
+  <g transform="translate(494 398)">
+    <rect width="188" height="86" rx="22" fill="rgba(255,255,255,.04)" stroke="rgba(255,255,255,.08)"/>
+    <text x="24" y="30" fill="#8e99ad" font-family="'JetBrains Mono', monospace" font-size="18" letter-spacing="2">COUNT</text>
+    <text x="24" y="62" fill="#f6f8fb" font-family="'IBM Plex Sans', Arial, sans-serif" font-size="28" font-weight="700">${count}</text>
+  </g>
+  <text x="78" y="560" fill="#9ba6ba" font-family="'IBM Plex Sans', Arial, sans-serif" font-size="24">Blade Ball Top Spender List</text>
+  ${imageMarkup}
+</svg>`;
+}
+
+function escapeSvgText(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function escapeSvgAttribute(value) {
+  return escapeSvgText(value)
+    .replaceAll('"', "&quot;");
+}
+
+function escapeHtmlAttribute(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("\n", "&#10;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function escapeHtmlContent(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
 }
 
 function createCspNonce() {
@@ -2539,18 +3371,17 @@ async function buildLcpPreloadMarkup(request, env) {
     return "";
   }
   try {
-    const row = await env.DB.prepare(`
-      SELECT COALESCE(media_variant_sets.low_key, swords.image_key) AS media_key
-      FROM swords
-      LEFT JOIN media_variant_sets ON media_variant_sets.base_key = swords.image_key
-      WHERE swords.image_key IS NOT NULL AND swords.image_key != ''
-      ORDER BY swords.v DESC, swords.id ASC
-      LIMIT 1
-    `).first();
-    if (!row?.media_key) {
+    const state = await loadSiteState(env);
+    const topSword = [...(state.swords || [])]
+      .filter((row) => row.image_key)
+      .sort(getSwordSorter("value-desc"))[0];
+    if (!topSword?.image_key) {
       return "";
     }
-    return `<link rel="preload" as="image" href="${buildMediaUrl(row.media_key)}" fetchpriority="high">`;
+    const mediaMap = buildSiteMediaDescriptorMap(state, [topSword.image_key]);
+    const descriptor = mediaMap.get(topSword.image_key);
+    const preloadUrl = descriptor?.low || descriptor?.medium || descriptor?.original;
+    return preloadUrl ? `<link rel="preload" as="image" href="${preloadUrl}" fetchpriority="high">` : "";
   } catch (error) {
     console.error("Could not build the homepage image preload.", error);
     return "";
@@ -2558,7 +3389,17 @@ async function buildLcpPreloadMarkup(request, env) {
 }
 
 function getCanonicalPagePath(request) {
-  const path = new URL(request.url).pathname.replace(/\/+$/, "") || "/";
+  const canonicalPath = getCanonicalBasePath(request);
+  const itemCardId = getRequestedItemCardId(request);
+  if (canonicalPath === "/" && itemCardId) {
+    return `/?item=${encodeURIComponent(String(itemCardId).replace(/^#/, ""))}`;
+  }
+  return canonicalPath;
+}
+
+function getCanonicalBasePath(request) {
+  const url = new URL(request.url);
+  const path = url.pathname.replace(/\/+$/, "") || "/";
   const canonicalPaths = new Map([
     ["/team.html", "/team"],
     ["/privacy.html", "/privacy"],
@@ -2635,6 +3476,10 @@ function enforceTrustedOrigin(request) {
   }
 }
 
+function enforceInternalReadRequest(request) {
+  enforceTrustedOrigin(request);
+}
+
 function enforceAppRequest(request) {
   if (request.headers.get(APP_REQUEST_HEADER) !== "1") {
     throw new HttpError(403, "Invalid application request.");
@@ -2650,53 +3495,34 @@ function getClientIdentifier(request) {
 
 async function consumeRateLimit(env, bucket, key, limit, windowSeconds) {
   const now = Math.floor(Date.now() / 1000);
-  const row = await env.DB.prepare(`
-    SELECT request_count, window_start
-    FROM rate_limits
-    WHERE bucket = ? AND limiter_key = ?
-  `).bind(bucket, key).first();
+  await updateRateLimitState(env, (state) => {
+    const nextBuckets = { ...(state.buckets || {}) };
+    const nextBucket = { ...(nextBuckets[bucket] || {}) };
+    const row = nextBucket[key];
+    const windowStart = Number(row?.windowStart || 0);
+    const requestCount = Number(row?.requestCount || 0);
 
-  if (!row) {
-    await env.DB.prepare(`
-      INSERT INTO rate_limits (bucket, limiter_key, request_count, window_start)
-      VALUES (?, ?, 1, ?)
-    `).bind(bucket, key, now).run();
-    await maybePruneRateLimits(env, now, windowSeconds);
-    return;
-  }
+    if (!row || now - windowStart >= windowSeconds) {
+      nextBucket[key] = { requestCount: 1, windowStart: now };
+    } else {
+      if (requestCount >= limit) {
+        const retryAfter = Math.max(1, windowSeconds - (now - windowStart));
+        throw new HttpError(429, "Too many requests. Try again shortly.", { "retry-after": String(retryAfter) });
+      }
+      nextBucket[key] = { requestCount: requestCount + 1, windowStart };
+    }
 
-  const windowStart = Number(row.window_start);
-  const requestCount = Number(row.request_count);
-  if (now - windowStart >= windowSeconds) {
-    await env.DB.prepare(`
-      UPDATE rate_limits
-      SET request_count = 1, window_start = ?
-      WHERE bucket = ? AND limiter_key = ?
-    `).bind(now, bucket, key).run();
-    await maybePruneRateLimits(env, now, windowSeconds);
-    return;
-  }
-
-  if (requestCount >= limit) {
-    const retryAfter = Math.max(1, windowSeconds - (now - windowStart));
-    throw new HttpError(429, "Too many requests. Try again shortly.", { "retry-after": String(retryAfter) });
-  }
-
-  await env.DB.prepare(`
-    UPDATE rate_limits
-    SET request_count = request_count + 1
-    WHERE bucket = ? AND limiter_key = ?
-  `).bind(bucket, key).run();
+    nextBuckets[bucket] = pruneRateLimitBucket(nextBucket, now, windowSeconds);
+    return {
+      ...state,
+      buckets: nextBuckets
+    };
+  });
 }
 
-async function maybePruneRateLimits(env, now, windowSeconds) {
-  if (Math.random() > 0.05) {
-    return;
-  }
-  await env.DB.prepare(`
-    DELETE FROM rate_limits
-    WHERE window_start < ?
-  `).bind(now - (windowSeconds * 4)).run();
+function pruneRateLimitBucket(entries, now, windowSeconds) {
+  const threshold = now - (windowSeconds * 4);
+  return Object.fromEntries(Object.entries(entries || {}).filter(([, value]) => Number(value?.windowStart || 0) >= threshold));
 }
 
 function parseCookies(cookieHeader) {
@@ -2714,9 +3540,9 @@ function parseCookies(cookieHeader) {
   return out;
 }
 
-async function hmacHex(secret, value) {
+async function hmacHex(secret, value, secretLabel = "ADMIN_SESSION_SECRET") {
   if (!secret) {
-    throw new HttpError(500, "ADMIN_SESSION_SECRET is not configured.");
+    throw new HttpError(500, `${secretLabel} is not configured.`);
   }
   const key = await crypto.subtle.importKey(
     "raw",
@@ -2759,8 +3585,14 @@ function base64UrlDecode(value) {
   return new TextDecoder().decode(bytes);
 }
 
-function currentDateString() {
+function currentUtcDateString() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function getNextUtcDateString(dateString) {
+  const date = new Date(`${dateString}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
 }
 
 function currentIsoString() {

@@ -1,6 +1,7 @@
 const API_BASE = "/api";
 const LOGIN_SHORTCUT_CODE = "KeyL";
 const TEAM_FETCH_CREDENTIALS = "same-origin";
+const SYSTEM_ACCOUNT_ELIGIBLE_DISCORD_ID = "386438401563557888";
 const ROLE_ORDER = ["Owner", "Developer", "Administrator", "Maintainer", "Editor", "Contributor"];
 const LOGOUT_ICON = `
   <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -21,12 +22,20 @@ const dom = {
   shortcutLoginOverlay: document.getElementById("teamShortcutLoginOverlay"),
   shortcutLoginCloseBtn: document.getElementById("teamShortcutLoginCloseBtn"),
   shortcutLoginCancelBtn: document.getElementById("teamShortcutLoginCancelBtn"),
-  shortcutLoginBtn: document.getElementById("teamShortcutLoginBtn")
+  shortcutLoginBtn: document.getElementById("teamShortcutLoginBtn"),
+  accountChoiceOverlay: document.getElementById("teamAccountChoiceOverlay"),
+  accountChoiceCloseBtn: document.getElementById("teamAccountChoiceCloseBtn"),
+  accountChoiceActualBtn: document.getElementById("teamAccountChoiceActualBtn"),
+  accountChoiceSystemBtn: document.getElementById("teamAccountChoiceSystemBtn"),
+  accountChoiceActualAvatar: document.getElementById("teamAccountChoiceActualAvatar"),
+  accountChoiceActualName: document.getElementById("teamAccountChoiceActualName"),
+  accountChoiceActualRole: document.getElementById("teamAccountChoiceActualRole")
 };
 
 const state = {
-  auth: { authenticated: false, user: null, permissions: [] },
-  team: []
+  auth: { authenticated: false, user: null, permissions: [], canUseSystemAccount: false, systemMode: false },
+  team: [],
+  lastLoginFlag: ""
 };
 
 function hasPermission(permission) {
@@ -35,11 +44,9 @@ function hasPermission(permission) {
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
+  headers["x-bbts-request"] = "1";
   if (options.body !== undefined) {
     headers["content-type"] = "application/json";
-  }
-  if ((options.method || "GET") !== "GET") {
-    headers["x-bbts-request"] = "1";
   }
   const response = await fetch(`${API_BASE}${path}`, { credentials: TEAM_FETCH_CREDENTIALS, ...options, headers });
   const body = await response.json().catch(() => ({}));
@@ -57,7 +64,7 @@ async function init() {
 
 async function refreshTeam() {
   const body = await api("/team");
-  state.team = body.team || [];
+  state.team = (body.team || []).filter((member) => member.discordUserId !== SYSTEM_ACCOUNT_ELIGIBLE_DISCORD_ID);
   if (body.auth) {
     state.auth = body.auth;
   }
@@ -319,7 +326,7 @@ function renderIdentityDock() {
         ${state.auth.user.avatarUrl ? `<img class="identity-avatar" src="${escapeHtmlAttr(state.auth.user.avatarUrl)}" alt="${escapeHtmlAttr(state.auth.user.displayName)}">` : '<div class="identity-avatar identity-avatar-fallback">?</div>'}
         <div>
           <div class="identity-name">${escapeHtml(state.auth.user.displayName)}</div>
-          <div class="identity-role">${escapeHtml(state.auth.user.role)}</div>
+          <div class="identity-role">${escapeHtml(state.auth.user.displayRole || state.auth.user.role)}</div>
         </div>
       </div>
       <button class="identity-logout" type="button" data-team-logout aria-label="Log out">${LOGOUT_ICON}</button>
@@ -334,6 +341,7 @@ function renderIdentityDock() {
     button.addEventListener("click", logout);
   });
   syncMobileUtilityVisibility();
+  maybeOpenAccountChoice();
 }
 
 function attachEvents() {
@@ -363,6 +371,18 @@ function attachEvents() {
   dom.shortcutLoginCloseBtn?.addEventListener("click", closeShortcutLoginModal);
   dom.shortcutLoginCancelBtn?.addEventListener("click", closeShortcutLoginModal);
   dom.shortcutLoginBtn?.addEventListener("click", () => startDiscordAuth("login"));
+  dom.accountChoiceOverlay?.addEventListener("click", (event) => {
+    if (event.target === dom.accountChoiceOverlay) {
+      closeAccountChoiceModal();
+    }
+  });
+  dom.accountChoiceCloseBtn?.addEventListener("click", closeAccountChoiceModal);
+  dom.accountChoiceActualBtn?.addEventListener("click", closeAccountChoiceModal);
+  dom.accountChoiceSystemBtn?.addEventListener("click", () => {
+    void activateSystemAccount().catch((error) => {
+      window.alert(error?.message || "Could not switch to the BBTSL System account.");
+    });
+  });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       if (dom.mobileUtilityOverlay && !dom.mobileUtilityOverlay.hidden) {
@@ -370,6 +390,9 @@ function attachEvents() {
       }
       if (dom.shortcutLoginOverlay && !dom.shortcutLoginOverlay.hidden) {
         closeShortcutLoginModal();
+      }
+      if (dom.accountChoiceOverlay && !dom.accountChoiceOverlay.hidden) {
+        closeAccountChoiceModal();
       }
     }
   });
@@ -383,6 +406,7 @@ function startDiscordAuth(purpose = "login") {
 function handleLoginFlags() {
   const url = new URL(window.location.href);
   const login = url.searchParams.get("login");
+  state.lastLoginFlag = login || "";
   if (!login) {
     return;
   }
@@ -430,6 +454,66 @@ function closeShortcutLoginModal() {
   dom.shortcutLoginOverlay.classList.remove("show");
   dom.shortcutLoginOverlay.hidden = true;
   document.body.classList.remove("modal-open");
+}
+
+function openAccountChoiceModal() {
+  if (!dom.accountChoiceOverlay || !state.auth?.user) {
+    return;
+  }
+  const authUser = state.auth.user;
+  const displayName = authUser.displayName || authUser.globalName || authUser.username || "Your account";
+  const roleText = authUser.displayRole || authUser.role || "Discord account";
+  if (authUser.avatarUrl) {
+    const avatar = document.createElement("img");
+    avatar.className = "account-choice-avatar";
+    avatar.id = "teamAccountChoiceActualAvatar";
+    avatar.src = authUser.avatarUrl;
+    avatar.alt = displayName;
+    dom.accountChoiceActualAvatar.replaceWith(avatar);
+    dom.accountChoiceActualAvatar = avatar;
+  } else {
+    const avatar = document.createElement("div");
+    avatar.className = "account-choice-avatar identity-avatar identity-avatar-fallback";
+    avatar.id = "teamAccountChoiceActualAvatar";
+    avatar.textContent = "?";
+    dom.accountChoiceActualAvatar.replaceWith(avatar);
+    dom.accountChoiceActualAvatar = avatar;
+  }
+  dom.accountChoiceActualName.textContent = displayName;
+  dom.accountChoiceActualRole.textContent = roleText;
+  dom.accountChoiceOverlay.hidden = false;
+  dom.accountChoiceOverlay.classList.add("show");
+  document.body.classList.add("modal-open");
+  dom.accountChoiceActualBtn?.focus();
+}
+
+function closeAccountChoiceModal() {
+  if (!dom.accountChoiceOverlay) {
+    return;
+  }
+  dom.accountChoiceOverlay.classList.remove("show");
+  dom.accountChoiceOverlay.hidden = true;
+  document.body.classList.remove("modal-open");
+}
+
+function maybeOpenAccountChoice() {
+  if (state.lastLoginFlag !== "success") {
+    return;
+  }
+  if (!state.auth?.authenticated || state.auth.systemMode || !state.auth.canUseSystemAccount) {
+    return;
+  }
+  if (String(state.auth.user?.discordUserId || "") !== SYSTEM_ACCOUNT_ELIGIBLE_DISCORD_ID) {
+    return;
+  }
+  state.lastLoginFlag = "";
+  openAccountChoiceModal();
+}
+
+async function activateSystemAccount() {
+  await api("/auth/system-session", { method: "POST" });
+  closeAccountChoiceModal();
+  await refreshTeam();
 }
 
 function syncMobileUtilityVisibility() {

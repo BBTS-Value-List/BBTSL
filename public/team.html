@@ -24,7 +24,7 @@
       </div>
     </a>
     <div class="topbar-actions">
-      <a class="top-link" href="/">Value List</a>
+      <a class="top-link" href="/">Top Spender List</a>
     </div>
   </div>
 
@@ -42,7 +42,7 @@
   <footer class="site-footer team-footer">
     <p class="footer-copy">Values are community-tracked and may shift as availability and demand change. BBTSL is an unofficial project and is not affiliated with Roblox, Blade Ball, their owners, or their respective copyright holders.</p>
     <p class="footer-line"><span class="footer-label">Credits</span><span class="footer-items">PVEstrap - <a href="https://github.com/PVEstrap" target="_blank" rel="noreferrer">GitHub</a> / <a href="https://pvestrap.com" target="_blank" rel="noreferrer">Website</a> <span class="footer-sep">|</span> Kronos - <a href="https://pve.bio/kronos" target="_blank" rel="noreferrer">Website</a> <span class="footer-sep">|</span> Basic - <a href="https://github.com/06basic" target="_blank" rel="noreferrer">GitHub</a></span></p>
-    <p class="footer-line"><span class="footer-label">Links</span><span class="footer-items"><a href="https://www.roblox.com/games/13772394625/Blade-Ball" target="_blank" rel="noreferrer">Blade Ball Experience</a> <span class="footer-sep">|</span> <a href="/">Value List</a> <span class="footer-sep">|</span> <a href="/privacy">Privacy</a> <span class="footer-sep">|</span> <a href="/terms">Terms</a> <span class="footer-sep">|</span> Contact BBTSL through the credited people above or at <a href="mailto:bbtsl@pve.bio">bbtsl@pve.bio</a>.</span></p>
+    <p class="footer-line"><span class="footer-label">Links</span><span class="footer-items"><a href="https://www.roblox.com/games/13772394625/Blade-Ball" target="_blank" rel="noreferrer">Blade Ball Experience</a> <span class="footer-sep">|</span> <a href="/">Top Spender List</a> <span class="footer-sep">|</span> <a href="/privacy">Privacy</a> <span class="footer-sep">|</span> <a href="/terms">Terms</a> <span class="footer-sep">|</span> Contact BBTSL through the credited people above or at <a href="mailto:bbtsl@pve.bio">bbtsl@pve.bio</a>.</span></p>
     <p class="footer-line"><span class="footer-label">Notice</span><span class="footer-items">This site is provided <strong class="footer-emphasis">as-is</strong> for informational use. Value entries, counts, and demand notes may change without notice and <strong class="footer-emphasis">should not</strong> be treated as guaranteed, official, or final.</span></p>
   </footer>
 
@@ -68,6 +68,30 @@
       <div class="modal-actions shortcut-login-actions">
         <button class="btn-cancel" id="teamShortcutLoginCancelBtn" type="button">Cancel</button>
         <button class="btn-save" id="teamShortcutLoginBtn" type="button">Login with Discord</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="teamAccountChoiceOverlay" hidden>
+    <div class="modal account-choice-modal" role="dialog" aria-modal="true" aria-labelledby="teamAccountChoiceTitle" aria-describedby="teamAccountChoiceCopy">
+      <button class="modal-close" id="teamAccountChoiceCloseBtn" type="button" aria-label="Close account choice dialog">×</button>
+      <h2 id="teamAccountChoiceTitle">Choose how to sign in</h2>
+      <p class="auth-copy" id="teamAccountChoiceCopy">Use your normal Discord account or switch into the internal BBTSL system profile for site work.</p>
+      <div class="account-choice-options">
+        <button class="account-choice-option" id="teamAccountChoiceActualBtn" type="button">
+          <div class="account-choice-avatar identity-avatar identity-avatar-fallback" id="teamAccountChoiceActualAvatar">?</div>
+          <div class="account-choice-copy">
+            <strong id="teamAccountChoiceActualName">Your account</strong>
+            <span id="teamAccountChoiceActualRole">Discord account</span>
+          </div>
+        </button>
+        <button class="account-choice-option account-choice-option-system" id="teamAccountChoiceSystemBtn" type="button">
+          <img class="account-choice-avatar" src="/og-image.png" alt="BBTSL">
+          <div class="account-choice-copy">
+            <strong>BBTSL</strong>
+            <span>System</span>
+          </div>
+        </button>
       </div>
     </div>
   </div>

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="darkreader-lock">
   <title>Privacy Policy | BBTSL</title>
-  <meta name="description" content="How BBTSL handles website, Discord sign-in, staff, and public API data.">
+  <meta name="description" content="How BBTSL handles website, Discord sign-in, staff, and private integration API data.">
   <meta name="theme-color" content="#12151a">
   <meta name="color-scheme" content="dark">
   <meta name="robots" content="index,follow">
@@ -27,7 +27,7 @@
     <header class="legal-hero">
       <p class="legal-kicker">BBTSL</p>
       <h1>Privacy Policy</h1>
-      <p class="legal-meta">Effective 16 July 2026 · Last reviewed 16 July 2026</p>
+      <p class="legal-meta">Effective 22 July 2026 · Last reviewed 22 July 2026</p>
     </header>
 
     <div class="legal-content">
@@ -42,20 +42,20 @@
         <table class="legal-table">
           <thead><tr><th>When</th><th>Data</th><th>Why</th><th>Basis</th></tr></thead>
           <tbody>
-            <tr><td>You browse the site or public API</td><td>Technical request data handled by Cloudflare, including IP address, request metadata, and security or rate-limit records.</td><td>Deliver the site, protect it from abuse, and keep the API reliable.</td><td>Legitimate interests under <a href="https://eur-lex.europa.eu/eli/reg/2016/679/art_6/oj/eng" target="_blank" rel="noreferrer">GDPR Article 6(1)(f)</a>.</td></tr>
+            <tr><td>You browse the site or use the private integration API</td><td>Technical request data handled by Cloudflare, including IP address, request metadata, client identifiers, and security or rate-limit records.</td><td>Deliver the site, protect it from abuse, and keep the service reliable.</td><td>Legitimate interests under <a href="https://eur-lex.europa.eu/eli/reg/2016/679/art_6/oj/eng" target="_blank" rel="noreferrer">GDPR Article 6(1)(f)</a>.</td></tr>
             <tr><td>You load the website fonts</td><td>Your browser requests font files from BBTSL.</td><td>Load the typefaces used by the website.</td><td>Legitimate interests in presenting and operating the website.</td></tr>
             <tr><td>You choose Discord sign-in</td><td>Discord user ID, username, display name, avatar hash, assigned role, account status, and sign-in timestamps. The site does not receive your Discord password.</td><td>Create your BBTSL session and apply the staff permissions assigned to that Discord account.</td><td>Steps taken at your request to provide the sign-in service and legitimate interests in access control.</td></tr>
             <tr><td>You use staff tools</td><td>Your staff account, role, action, time, and the relevant before and after record.</td><td>Secure edits, investigate mistakes, and restore data when needed.</td><td>Legitimate interests in integrity, security, and accountability.</td></tr>
-            <tr><td>You submit media as staff</td><td>The media file and its technical metadata. Do not upload personal data unless it is necessary for the item record.</td><td>Display the media attached to a public value-list entry.</td><td>Legitimate interests in operating the catalogue.</td></tr>
+            <tr><td>You submit media as staff</td><td>The media file and its technical metadata. Do not upload personal data unless it is necessary for the item record.</td><td>Display the media attached to a public item entry.</td><td>Legitimate interests in operating the catalogue.</td></tr>
           </tbody>
         </table>
         <p>BBTSL does not use advertising cookies, behavioural advertising, analytics pixels, or automated decisions that produce legal or similarly significant effects.</p>
       </section>
 
       <section class="legal-section">
-        <h2>Discord sign-in and the public API</h2>
+        <h2>Discord sign-in and the private integration API</h2>
         <p>Discord sign-in is optional. When you select it, Discord authenticates you and returns the identity fields listed above. Discord processes its own services under its <a href="https://discord.com/privacy/privacypolicy" target="_blank" rel="noreferrer">Privacy Policy</a>.</p>
-        <p>The public, read-only BBTSL API does not require a Discord bot token, Discord message content, guild membership, or a Discord user ID. The website does not receive those fields from a public API request. This policy covers the website and public API only.</p>
+        <p>The private, read-only BBTSL integration API uses rotating credentials derived from separately managed client secrets. The website does not expose those client secrets to the browser. This policy covers the website and private integration API only.</p>
       </section>
 
       <section class="legal-section">
@@ -71,7 +71,7 @@
           <li>Session cookies last up to 12 hours. The short OAuth state cookie lasts up to 10 minutes.</li>
           <li>Rate-limit records are short-lived and are pruned automatically.</li>
           <li>Discord profile and role records remain while the account is needed for access control or public team attribution. Disabled accounts are not shown publicly.</li>
-          <li>Staff audit records remain while needed to protect the integrity of value-list edits and recover from mistakes.</li>
+          <li>Staff audit records remain while needed to protect the integrity of item edits and recover from mistakes.</li>
           <li>Public item and media records remain until changed or removed by authorised staff.</li>
         </ul>
         <p>We review retention when a record is no longer needed. If you request erasure, we will assess the request against our security and audit obligations.</p>
@@ -85,14 +85,14 @@
 
       <section class="legal-section">
         <h2>Changes</h2>
-        <p>We will update this policy when the website, public API, or legal requirements materially change. The effective date at the top shows the latest version.</p>
+        <p>We will update this policy when the website, private integration API, or legal requirements materially change. The effective date at the top shows the latest version.</p>
       </section>
     </div>
   </main>
 
   <footer class="site-footer team-footer">
     <p class="footer-copy">BBTSL is an unofficial community project and is not affiliated with Roblox, Blade Ball, or their owners.</p>
-    <p class="footer-line"><span class="footer-label">Links</span><span class="footer-items"><a href="/">Value List</a> <span class="footer-sep">|</span> <a href="/team">Team</a> <span class="footer-sep">|</span> <a href="/privacy">Privacy</a> <span class="footer-sep">|</span> <a href="/terms">Terms</a> <span class="footer-sep">|</span> <a href="mailto:bbtsl@pve.bio">Contact</a></span></p>
+    <p class="footer-line"><span class="footer-label">Links</span><span class="footer-items"><a href="/">Top Spender List</a> <span class="footer-sep">|</span> <a href="/team">Team</a> <span class="footer-sep">|</span> <a href="/privacy">Privacy</a> <span class="footer-sep">|</span> <a href="/terms">Terms</a> <span class="footer-sep">|</span> <a href="mailto:bbtsl@pve.bio">Contact</a></span></p>
   </footer>
 </body>
 </html>

@@ -1,13 +1,13 @@
-# BBTSL Blade Ball Value List
+# BBTSL Blade Ball Top Spender List
 
-BBTSL is a public Blade Ball value-list site served by a Cloudflare Worker. It provides a searchable item catalogue, media-backed item details, Discord sign-in, and role-gated staff tools.
+BBTSL is a public Blade Ball item site served by a Cloudflare Worker. It provides a searchable Top Spender list, media-backed item details, Discord sign-in, and role-gated staff tools.
 
 ## Architecture
 
-- `public/` contains the static site, including the value list and public team directory.
-- `src/worker.js` serves the site and API, handles Discord OAuth, sessions, authorization, D1 access, media delivery, and security headers.
+- `public/` contains the static site, including the item list and public team directory.
+- `src/worker.js` serves the site and API, handles Discord OAuth, sessions, authorization, R2-backed site state and media delivery, limited D1 access, and security headers.
 - Public assets use the stable entrypoints `public/app.js`, `public/team.js`, and `public/styles.css`. Self-hosted fonts live under `public/fonts/`.
-- Cloudflare D1 stores item, media, user, role, audit, and rate-limit data. Sessions are signed cookies.
+- Cloudflare R2 stores the site state, public item catalogue, media metadata, and rate-limit state. Cloudflare D1 stores user, role, and audit-log data. Sessions are signed cookies.
 - `scripts/generate-secret-token.mjs` generates a high-entropy value for a Worker secret.
 
 ## Requirements
@@ -23,7 +23,7 @@ npm install
 npm run cf:dev
 ```
 
-The local Worker listens on the URL printed by Wrangler. It uses local D1 state unless Wrangler is explicitly instructed otherwise.
+The local Worker listens on the URL printed by Wrangler. It uses local Wrangler state for D1 and R2 unless Wrangler is explicitly instructed otherwise.
 
 ## Validation
 
@@ -43,11 +43,12 @@ The Worker requires these values:
 - `ADMIN_SESSION_SECRET`
 - `DISCORD_CLIENT_ID`
 - `DISCORD_CLIENT_SECRET`
-- `DISCORD_REDIRECT_URI` — an HTTPS Discord OAuth callback URL
+- `DISCORD_REDIRECT_URI` - an HTTPS Discord OAuth callback URL
+- `V1_API_CLIENT_SECRETS` - JSON object of integration client ids to long random base secrets
 
-Public runtime values such as `PUBLIC_SITE_URL` and `SITE_NAME` belong in `wrangler.jsonc`. Put sensitive Worker values in Cloudflare secrets for deployments. `DISCORD_BOT_TOKEN` remains a local integration placeholder and is not used or accepted by this Worker.
+Public runtime values such as `PUBLIC_SITE_URL` and `SITE_NAME` belong in `wrangler.jsonc`. Put sensitive Worker values in Cloudflare secrets for deployments.
 
-Keep local scratch material out of commits. That includes `.dev.vars`, `.env`, Wrangler state, local SQLite files, one-off SQL helpers, export dumps, and import or migration scratch files that only exist to support a local operation.
+Keep local scratch material out of commits. That includes `.dev.vars`, `.env`, Wrangler state, local SQLite files, one-off SQL helpers, export dumps, temporary JSON snapshots, and migration scratch files that only exist to support a local operation.
 
 Generate a new random secret value with:
 
@@ -55,26 +56,74 @@ Generate a new random secret value with:
 npm run secrets:generate
 ```
 
-## Bot API
+## Private v1 API
 
-Discord bots can read the public API directly from `https://bbtsl.lol`. It is a versioned, read-only API and does not use `DISCORD_BOT_TOKEN`, Discord OAuth cookies, or the site staff endpoints. Do not send a bot token to this Worker.
+`/api/v1/*` is a private integration API for approved server-side clients. The public website does not call it from the browser.
 
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /api/v1/health` | Service health and API version. |
-| `GET /api/v1/swords` | Paginated value-list records. |
-| `GET /api/v1/swords/%23ABC123` | One record by its immutable card ID. URL-encode the `#`. |
+| `GET /api/v1/swords` | Paginated item records. |
+| `GET /api/v1/swords/%23ABC123` | One item by immutable card ID. URL-encode the `#`. |
 | `GET /api/v1/team` | Active public team directory. |
 
-`/api/v1/swords` accepts optional `category`, `search`, `sort`, `limit`, and `offset` parameters. Valid sort values are `value-desc`, `value-asc`, `name-asc`, and `updated-desc`. `limit` defaults to 50 and is capped at 100. List responses use `{ "data": [...], "meta": { "total", "limit", "offset" } }`; single-record responses use `{ "data": {...} }`; failures use `{ "error": "..." }`.
+### Authentication
 
-The public API is rate-limited to 120 requests per minute per client and cached for up to 60 seconds. It does not send permissive CORS headers because Discord bots should call it from their server process, not browser JavaScript.
+Each client id in `V1_API_CLIENT_SECRETS` gets a rotating 128-bit daily access key derived from its base secret.
 
-The staff site routes and mutation endpoints are separate from the public API. They require Discord sign-in, role checks, same-origin requests, and the Worker request header checks enforced by `src/worker.js`.
+Send these headers with every `/api/v1/*` request:
+
+- `x-bbtsl-api-client: <client-id>`
+- `x-bbtsl-api-date: <UTC date in YYYY-MM-DD>`
+- `authorization: Bearer <32 hex chars>`
+
+The daily bearer key is derived as:
+
+- `HMAC-SHA-256(baseSecret, "bbtsl-v1:<clientId>:<yyyy-mm-dd>")`
+- take the first 32 hex characters of that digest
+
+Generate the current key locally with:
+
+```powershell
+npm run api:v1-key -- owner
+```
+
+`/api/v1/swords` accepts optional `category`, `badge`, `demand`, `trend`, `cardId`, `search`, `sort`, `limit`, and `offset` parameters. Valid sort values are `value-desc`, `value-asc`, `name-asc`, `updated-desc`, `count-desc`, `count-asc`, `demand-desc`, `demand-asc`, and `trend-rank`.
+
+List responses use:
+
+```json
+{
+  "data": [],
+  "meta": {
+    "version": "v1",
+    "generatedAt": "2026-07-22T00:00:00.000Z",
+    "clientId": "owner",
+    "total": 0,
+    "limit": 50,
+    "offset": 0,
+    "hasMore": false,
+    "filters": {
+      "category": null,
+      "demand": null,
+      "trend": null,
+      "cardId": null,
+      "search": null,
+      "sort": "value-desc"
+    }
+  }
+}
+```
+
+Item responses return named fields such as `cardId`, `name`, `category`, `value`, `demand`, `trend`, `count`, `updatedAt`, `description`, `media`, and `flags`.
+
+The private API is rate-limited to 180 requests per minute per client and IP combination, does not emit permissive CORS headers, and should only be called from trusted server-side code.
+
+The staff site routes and mutation endpoints remain separate from the private integration API. They require Discord sign-in, role checks, same-origin requests, and the Worker request header checks enforced by `src/worker.js`.
 
 ## Contributor guidance
 
-Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a pull request. Use the issue forms for public bugs, feature requests, and data corrections. Do not report vulnerabilities publicly; follow [SECURITY.md](./SECURITY.md).
+Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a pull request. Use the issue forms for public bugs, feature requests, and data corrections. Do not report vulnerabilities publicly. Follow [SECURITY.md](./SECURITY.md).
 
 ## Public links
 

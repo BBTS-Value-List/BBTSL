@@ -17,4 +17,6 @@ coverage/
 tmp-api.json
 tmp-audit-backfill.sql
 tmp-role-update.sql
+tmp-live-swords.json
+tmp-site-state.json
 .playwright-cli/

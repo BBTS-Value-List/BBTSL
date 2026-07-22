@@ -3,7 +3,8 @@ const CATEGORY_COLORS = {
   Ranked: "#e8b94f",
   "Top Spenders": "#4fd1a5",
   "Other Swords": "#5fc2ff",
-  Explosions: "#ff6a6a"
+  Explosions: "#ff6a6a",
+  Emotes: "#ff89cf"
 };
 
 const TREND_ICONS = {
@@ -15,9 +16,10 @@ const TREND_ICONS = {
 };
 
 const VALUE_BAR_STOPS = ["#4a5a78", "#5573c9", "#7d5fd9", "#a34fd0", "#d94f9e", "#e8636b", "#e88a4f", "#efab4a", "#f4cf5c"];
-const CATEGORY_ORDER = ["All", "LTM", "Ranked", "Top Spenders", "Other Swords", "Explosions"];
+const CATEGORY_ORDER = ["All", "LTM", "Ranked", "Top Spenders", "Other Swords", "Explosions", "Emotes"];
 const API_BASE = "/api";
 const HOVER_DELAY_MS = 240;
+const MOBILE_HOLD_DELAY_MS = 3_000;
 const GRID_SKELETON_COUNT = 16;
 const GRID_INITIAL_CARD_COUNT = 12;
 const GRID_CARD_BATCH_SIZE = 12;
@@ -25,6 +27,9 @@ const GRID_BATCH_ROOT_MARGIN = "768px 0px";
 const CARD_MEDIA_ROOT_MARGIN = "0px";
 const HIGH_QUALITY_IDLE_TIMEOUT_MS = 1_000;
 const CARD_ORIGINAL_UPGRADE_DELAY_MS = 750;
+const SYSTEM_ACCOUNT_ELIGIBLE_DISCORD_ID = "386438401563557888";
+const FAVORITES_STORAGE_PREFIX = "bbtsl:favorites:";
+const FAVORITE_RETURN_STORAGE_KEY = "bbtsl:favorite-return";
 const AUDIO_UPLOAD_TYPES = new Set(["audio/mpeg", "audio/x-mpeg", "audio/mpeg3", "audio/mp3", "audio/ogg", "audio/wav", "audio/x-wav"]);
 const AUDIO_UPLOAD_EXTENSIONS = new Map([
   [".mpeg", "audio/mpeg"],
@@ -35,11 +40,26 @@ const AUDIO_UPLOAD_EXTENSIONS = new Map([
 const VISUAL_MEDIA_UPLOAD_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif", "video/mp4"]);
 const MAX_SFX_UPLOAD_BYTES = 1 * 1024 * 1024;
 const MAX_VISUAL_PREVIEW_UPLOAD_BYTES = 10 * 1024 * 1024;
+const DEMAND_SORT_RANK = {
+  "Very High": 4,
+  High: 3,
+  Medium: 2,
+  Low: 1,
+  "N/A": 0
+};
+const TREND_SORT_RANK = {
+  Rising: 4,
+  Stable: 3,
+  Falling: 2,
+  Manipulated: 1,
+  "N/A": 0
+};
 const MEDIA_UPLOAD_VARIANTS = {
   img: "card-image",
   detailMedia: "detail",
   slashMedia: "slash",
-  slashAudio: "slash-audio"
+  slashAudio: "slash-audio",
+  finisherMedia: "finisher"
 };
 const LOGOUT_ICON = `
   <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -67,6 +87,7 @@ const dom = {
   grid: document.getElementById("grid"),
   gridSentinel: document.getElementById("gridSentinel"),
   empty: document.getElementById("empty"),
+  routeToast: null,
   lastUpdated: document.getElementById("lastUpdated"),
   roleToolbar: document.getElementById("roleToolbar"),
   identityDock: document.getElementById("identityDock"),
@@ -80,6 +101,17 @@ const dom = {
   shortcutLoginCloseBtn: document.getElementById("shortcutLoginCloseBtn"),
   shortcutLoginCancelBtn: document.getElementById("shortcutLoginCancelBtn"),
   shortcutLoginBtn: document.getElementById("shortcutLoginBtn"),
+  favoriteLoginOverlay: document.getElementById("favoriteLoginOverlay"),
+  favoriteLoginCloseBtn: document.getElementById("favoriteLoginCloseBtn"),
+  favoriteLoginCancelBtn: document.getElementById("favoriteLoginCancelBtn"),
+  favoriteLoginBtn: document.getElementById("favoriteLoginBtn"),
+  accountChoiceOverlay: document.getElementById("accountChoiceOverlay"),
+  accountChoiceCloseBtn: document.getElementById("accountChoiceCloseBtn"),
+  accountChoiceActualBtn: document.getElementById("accountChoiceActualBtn"),
+  accountChoiceSystemBtn: document.getElementById("accountChoiceSystemBtn"),
+  accountChoiceActualAvatar: document.getElementById("accountChoiceActualAvatar"),
+  accountChoiceActualName: document.getElementById("accountChoiceActualName"),
+  accountChoiceActualRole: document.getElementById("accountChoiceActualRole"),
   editorSystemOverlay: document.getElementById("editorSystemOverlay"),
   editorSystemCloseBtn: document.getElementById("editorSystemCloseBtn"),
   editorSystemV1Btn: document.getElementById("editorSystemV1Btn"),
@@ -100,6 +132,7 @@ const dom = {
   detailCategory: document.getElementById("detailCategory"),
   detailUpdated: document.getElementById("detailUpdated"),
   detailValue: document.getElementById("detailValue"),
+  detailFavoriteBtn: document.getElementById("detailFavoriteBtn"),
   detailDemand: document.getElementById("detailDemand"),
   detailTrend: document.getElementById("detailTrend"),
   detailCount: document.getElementById("detailCount"),
@@ -107,11 +140,20 @@ const dom = {
   detailMediaGrid: document.getElementById("detailMediaGrid"),
   detailPrimaryCard: document.getElementById("detailPrimaryCard"),
   detailSlashCard: document.getElementById("detailSlashCard"),
+  detailFinisherCard: document.getElementById("detailFinisherCard"),
   detailPrimaryDownload: document.getElementById("detailPrimaryDownload"),
   detailSlashDownload: document.getElementById("detailSlashDownload"),
+  detailFinisherDownload: document.getElementById("detailFinisherDownload"),
+  detailAudioDownload: document.getElementById("detailAudioDownload"),
+  detailPrimaryAudioBtn: document.getElementById("detailPrimaryAudioBtn"),
+  detailFinisherAudioBtn: document.getElementById("detailFinisherAudioBtn"),
+  detailShareBtn: document.getElementById("detailShareBtn"),
+  detailPrimaryLabel: document.getElementById("detailPrimaryLabel"),
+  detailAudioLabel: document.getElementById("detailAudioLabel"),
   detailPrimaryMedia: document.getElementById("detailPrimaryMedia"),
   detailSlashMedia: document.getElementById("detailSlashMedia"),
   detailSlashAudio: document.getElementById("detailSlashAudio"),
+  detailFinisherMedia: document.getElementById("detailFinisherMedia"),
   auditModalOverlay: document.getElementById("auditModalOverlay"),
   auditCloseBtn: document.getElementById("auditCloseBtn"),
   auditSearch: document.getElementById("auditSearch"),
@@ -140,14 +182,22 @@ const dom = {
     detailMedia: document.getElementById("f-detail-media"),
     slashMedia: document.getElementById("f-slash-media"),
     slashAudio: document.getElementById("f-slash-audio"),
+    finisherMedia: document.getElementById("f-finisher-media"),
     imagePreview: document.getElementById("f-image-preview"),
     detailPreview: document.getElementById("f-detail-preview"),
     slashPreview: document.getElementById("f-slash-preview"),
     audioPreview: document.getElementById("f-audio-preview"),
+    finisherPreview: document.getElementById("f-finisher-preview"),
     imageRemove: document.getElementById("f-image-remove"),
     detailRemove: document.getElementById("f-detail-remove"),
     slashRemove: document.getElementById("f-slash-remove"),
-    audioRemove: document.getElementById("f-audio-remove")
+    audioRemove: document.getElementById("f-audio-remove"),
+    finisherRemove: document.getElementById("f-finisher-remove"),
+    detailLabel: document.getElementById("f-detail-label"),
+    audioLabel: document.getElementById("f-audio-label"),
+    slashField: document.getElementById("f-slash-field"),
+    finisherField: document.getElementById("f-finisher-field"),
+    finisherEnabled: document.getElementById("f-finisher-enabled")
   }
 };
 
@@ -166,19 +216,27 @@ const state = {
   editorSystem: "v1",
   isAddingSword: false,
   activeModal: null,
+  lastLoginFlag: "",
   pendingMedia: {
     img: undefined,
     detailMedia: undefined,
     slashMedia: undefined,
-    slashAudio: undefined
+    slashAudio: undefined,
+    finisherMedia: undefined
   },
   auditUsers: [],
   auditLogs: [],
   hoverTimers: new Map(),
+  hoveredCardId: null,
+  touchHold: { timer: null, cardId: null, pointerId: null, triggered: false },
+  routeNoticeKey: "",
   confirmState: null,
   selectedCardId: null,
   openingCardId: null,
-  renderedSwordCount: 0
+  renderedSwordCount: 0,
+  favoriteCardIds: new Set(),
+  restoreFocusTo: null,
+  modalStack: []
 };
 
 const mediaRuntime = {
@@ -195,11 +253,9 @@ function hasPermission(permission) {
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
+  headers["x-bbts-request"] = "1";
   if (options.body !== undefined) {
     headers["content-type"] = "application/json";
-  }
-  if ((options.method || "GET") !== "GET") {
-    headers["x-bbts-request"] = "1";
   }
 
   const response = await fetch(`${API_BASE}${path}`, {
@@ -208,13 +264,148 @@ async function api(path, options = {}) {
     headers
   });
 
-  const body = await response.json().catch(() => ({}));
+  const responseText = await response.text();
+  const body = responseText ? parseApiBody(responseText) : {};
   if (!response.ok) {
-    const error = new Error(body.error || "Request failed.");
+    const fallbackMessage = responseText.trim() || `Request failed (${response.status}).`;
+    const error = new Error(body.error || fallbackMessage);
     error.status = response.status;
     throw error;
   }
   return body;
+}
+
+function parseApiBody(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+}
+
+function getFavoriteStorageKey() {
+  const userKey = state.auth?.user?.discordUserId || state.auth?.user?.id || "";
+  return userKey ? `${FAVORITES_STORAGE_PREFIX}${userKey}` : "";
+}
+
+function loadFavoriteCardIds() {
+  const storageKey = getFavoriteStorageKey();
+  if (!storageKey) {
+    state.favoriteCardIds = new Set();
+    return;
+  }
+  try {
+    const raw = window.localStorage.getItem(storageKey);
+    const values = raw ? JSON.parse(raw) : [];
+    state.favoriteCardIds = new Set((Array.isArray(values) ? values : []).map((value) => normalizeCardIdValue(value)).filter(Boolean));
+  } catch {
+    state.favoriteCardIds = new Set();
+  }
+}
+
+function saveFavoriteCardIds() {
+  const storageKey = getFavoriteStorageKey();
+  if (!storageKey) {
+    return;
+  }
+  window.localStorage.setItem(storageKey, JSON.stringify([...state.favoriteCardIds].sort()));
+}
+
+function getPendingFavoriteReturnCardId() {
+  return normalizeCardIdValue(window.sessionStorage.getItem(FAVORITE_RETURN_STORAGE_KEY));
+}
+
+function setPendingFavoriteReturnCardId(cardId) {
+  const normalizedCardId = normalizeCardIdValue(cardId);
+  if (!normalizedCardId) {
+    window.sessionStorage.removeItem(FAVORITE_RETURN_STORAGE_KEY);
+    return;
+  }
+  window.sessionStorage.setItem(FAVORITE_RETURN_STORAGE_KEY, normalizedCardId);
+}
+
+function isFavoriteSword(sword) {
+  const cardId = normalizeCardIdValue(sword?.cardId);
+  return Boolean(cardId && state.favoriteCardIds.has(cardId));
+}
+
+function setFavoriteCardState(cardId, isFavorite) {
+  const normalizedCardId = normalizeCardIdValue(cardId);
+  if (!normalizedCardId) {
+    return;
+  }
+  if (isFavorite) {
+    state.favoriteCardIds.add(normalizedCardId);
+  } else {
+    state.favoriteCardIds.delete(normalizedCardId);
+  }
+  saveFavoriteCardIds();
+}
+
+function syncFavoriteButton(sword) {
+  if (!dom.detailFavoriteBtn) {
+    return;
+  }
+  const isFavorite = isFavoriteSword(sword);
+  dom.detailFavoriteBtn.classList.toggle("is-favorite", isFavorite);
+  dom.detailFavoriteBtn.setAttribute("aria-pressed", isFavorite ? "true" : "false");
+  dom.detailFavoriteBtn.setAttribute("aria-label", isFavorite ? "Remove item from favorites" : "Add item to favorites");
+  const copy = dom.detailFavoriteBtn.querySelector(".detail-favorite-copy");
+  if (copy) {
+    copy.textContent = isFavorite ? "Favorited" : "Favorite";
+  }
+}
+
+function syncFavoriteIndicators() {
+  syncFavoriteButton(findSword(state.activeSwordId));
+  document.querySelectorAll(".card[data-card]").forEach((card) => {
+    const sword = findSword(Number(card.dataset.card));
+    card.classList.toggle("is-favorite-card", isFavoriteSword(sword));
+  });
+}
+
+function openFavoriteLoginModal() {
+  openModal(dom.favoriteLoginOverlay);
+  dom.favoriteLoginBtn?.focus();
+}
+
+function closeFavoriteLoginModal() {
+  setPendingFavoriteReturnCardId(null);
+  closeModal(dom.favoriteLoginOverlay);
+}
+
+function toggleActiveFavorite() {
+  const sword = findSword(state.activeSwordId);
+  if (!sword?.cardId) {
+    return;
+  }
+  if (!state.auth?.authenticated) {
+    setPendingFavoriteReturnCardId(sword.cardId);
+    openFavoriteLoginModal();
+    return;
+  }
+  setFavoriteCardState(sword.cardId, !isFavoriteSword(sword));
+  renderGrid();
+  fillDetailPanel(findSword(state.activeSwordId));
+}
+
+function handlePostLoginFavoriteReturn() {
+  if (state.lastLoginFlag !== "success" || !state.auth?.authenticated) {
+    return;
+  }
+  const pendingCardId = getPendingFavoriteReturnCardId();
+  if (!pendingCardId) {
+    return;
+  }
+  const sword = findSwordByCardId(`#${pendingCardId}`);
+  setPendingFavoriteReturnCardId(null);
+  if (!sword) {
+    return;
+  }
+  updateItemRoute(sword.cardId);
+  if (state.activeModal !== dom.detailModalOverlay.id || state.activeSwordId !== sword.id) {
+    openDetailModal(sword.id, { preserveRoute: true });
+  }
 }
 
 async function initialize() {
@@ -227,12 +418,20 @@ async function initialize() {
 
 async function refreshSwords() {
   const { swords, auth } = await api(`/swords?sort=${encodeURIComponent(state.sortMode)}`);
-  state.swords = (swords || []).map(normalizeSwordRecord);
+  applySwordState(swords || [], auth);
+  maybeOpenAccountChoice();
+  syncRouteModalFromLocation();
+  handlePostLoginFavoriteReturn();
+}
+
+function applySwordState(swords, auth = null) {
+  state.swords = (swords || []).map(normalizeSwordRecord).sort(compareSwords);
   state.isGridLoading = false;
   if (auth) {
     state.auth = auth;
   }
-  const values = swords.map((item) => item.v);
+  loadFavoriteCardIds();
+  const values = state.swords.map((item) => item.v);
   state.minValue = values.length ? Math.min(...values) : 0;
   state.maxValue = values.length ? Math.max(...values) : 0;
   renderGrid();
@@ -278,11 +477,11 @@ function renderToolbar() {
   document.getElementById("addSwordBtn")?.addEventListener("click", openAddModal);
   document.getElementById("exportBtn")?.addEventListener("click", exportData);
   document.getElementById("resetBtn")?.addEventListener("click", () => openProtectedConfirmation("reset", async () => {
-    await api("/reset", {
+    const { swords } = await api("/reset", {
       method: "POST",
       body: JSON.stringify({ confirmation: CONFIRMATIONS.reset.phrase })
     });
-    await refreshSwords();
+    applySwordState(swords || []);
     closeConfirmModal();
   }));
 }
@@ -294,7 +493,7 @@ function renderIdentityDock() {
         ${state.auth.user.avatarUrl ? `<img class="identity-avatar" src="${escapeHtmlAttr(state.auth.user.avatarUrl)}" alt="${escapeHtmlAttr(state.auth.user.displayName)}">` : '<div class="identity-avatar identity-avatar-fallback">?</div>'}
         <div>
           <div class="identity-name">${escapeHtml(state.auth.user.displayName)}</div>
-          <div class="identity-role">${escapeHtml(state.auth.user.role)}</div>
+          <div class="identity-role">${escapeHtml(state.auth.user.displayRole || state.auth.user.role)}</div>
         </div>
       </div>
       <button class="identity-logout" type="button" data-logout-trigger aria-label="Log out">${LOGOUT_ICON}</button>
@@ -384,12 +583,25 @@ async function prepareAuditFilters() {
 function getFilteredSwords() {
   return state.swords
     .filter((sword) => (state.activeCategory === "All" ? true : sword.c === state.activeCategory))
-    .filter((sword) => sword.n.toLowerCase().includes(state.searchTerm.toLowerCase()))
+    .filter((sword) => (state.sortMode === "favorites-only" ? isFavoriteSword(sword) : true))
+    .filter((sword) => searchMatchesSword(sword, state.searchTerm))
     .sort(compareSwords);
 }
 
 function compareSwords(left, right) {
   switch (state.sortMode) {
+    case "count-desc":
+      return compareNullableNumbers(right.ct, left.ct) || Number(left.id) - Number(right.id);
+    case "count-asc":
+      return compareNullableNumbers(left.ct, right.ct) || Number(left.id) - Number(right.id);
+    case "demand-desc":
+      return getDemandRank(right.d) - getDemandRank(left.d) || Number(right.v) - Number(left.v) || Number(left.id) - Number(right.id);
+    case "demand-asc":
+      return getDemandRank(left.d) - getDemandRank(right.d) || Number(right.v) - Number(left.v) || Number(left.id) - Number(right.id);
+    case "trend-rank":
+      return getTrendRank(right.t) - getTrendRank(left.t) || Number(right.v) - Number(left.v) || Number(left.id) - Number(right.id);
+    case "favorites-only":
+      return right.v - left.v || left.id - right.id;
     case "value-asc":
       return left.v - right.v || left.id - right.id;
     case "name-asc":
@@ -400,6 +612,117 @@ function compareSwords(left, right) {
     default:
       return right.v - left.v || left.id - right.id;
   }
+}
+
+function compareNullableNumbers(left, right) {
+  const normalizedLeft = left === null || left === undefined ? Number.NEGATIVE_INFINITY : Number(left);
+  const normalizedRight = right === null || right === undefined ? Number.NEGATIVE_INFINITY : Number(right);
+  return normalizedLeft - normalizedRight;
+}
+
+function getDemandRank(value) {
+  return DEMAND_SORT_RANK[String(value || "N/A")] ?? DEMAND_SORT_RANK["N/A"];
+}
+
+function getTrendRank(value) {
+  return TREND_SORT_RANK[String(value || "N/A")] ?? TREND_SORT_RANK["N/A"];
+}
+
+function normalizeSearchText(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizeCardIdValue(value) {
+  return normalizeSearchText(value).replace(/^#+/, "");
+}
+
+function isEmoteCategory(category) {
+  return String(category || "") === "Emotes";
+}
+
+function getSwordRarityValues(sword) {
+  return [
+    sword?.rarity,
+    sword?.r,
+    sword?.rar,
+    sword?.tier
+  ].filter(Boolean).map(normalizeSearchText);
+}
+
+function getSwordSearchIndex(sword) {
+  const cardId = normalizeCardIdValue(sword.cardId);
+  const rarityValues = getSwordRarityValues(sword);
+  const category = normalizeSearchText(sword.c);
+  const badgeValues = [category];
+  const favoriteValues = isFavoriteSword(sword) ? ["favorite", "favorites", "favorited"] : [];
+  if (category === "emotes" || category === "emote") {
+    badgeValues.push("emote", "emotes");
+  }
+  const fieldMap = {
+    id: [cardId, normalizeSearchText(sword.cardId)],
+    badge: badgeValues,
+    category: badgeValues,
+    trend: [normalizeSearchText(sword.t)],
+    demand: [normalizeSearchText(sword.d)],
+    rarity: rarityValues,
+    favorite: favoriteValues,
+    favourites: favoriteValues,
+    count: [sword.ct === null || sword.ct === undefined ? "" : String(sword.ct)],
+    name: [normalizeSearchText(sword.n)]
+  };
+  const generalFields = [
+    normalizeSearchText(sword.n),
+    normalizeSearchText(sword.cardId),
+    cardId,
+    category,
+    normalizeSearchText(sword.d),
+    normalizeSearchText(sword.t),
+    normalizeSearchText(sword.descr),
+    ...rarityValues,
+    ...(fieldMap.count.filter(Boolean))
+  ];
+  return { fieldMap, generalFields };
+}
+
+function searchMatchesSword(sword, query) {
+  const normalizedQuery = normalizeSearchText(query);
+  if (!normalizedQuery) {
+    return true;
+  }
+  const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
+  const searchIndex = getSwordSearchIndex(sword);
+  return tokens.every((token) => matchSearchToken(searchIndex, token));
+}
+
+function matchSearchToken(searchIndex, token) {
+  const normalizedToken = normalizeSearchText(token);
+  if (!normalizedToken) {
+    return true;
+  }
+  if (normalizedToken === "favorite" || normalizedToken === "favorites" || normalizedToken === "favorited" || normalizedToken === "favourites" || normalizedToken === "favourited") {
+    return searchIndex.fieldMap.favorite.some(Boolean);
+  }
+  const structuredMatch = normalizedToken.match(/^([a-z]+):(.*)$/);
+  if (structuredMatch) {
+    const [, rawField, rawValue] = structuredMatch;
+    const field = rawField === "cat"
+      ? "category"
+      : (rawField === "favorites" || rawField === "favorited" || rawField === "favourites" || rawField === "favourited" ? "favorite" : rawField);
+    const value = normalizeSearchText(rawValue);
+    if (!value) {
+      return field === "favorite" ? searchIndex.fieldMap.favorite.some(Boolean) : true;
+    }
+    const fields = searchIndex.fieldMap[field];
+    if (!fields) {
+      return searchIndex.generalFields.some((entry) => entry.includes(normalizedToken));
+    }
+    return fields.some((entry) => normalizeSearchText(entry).includes(value));
+  }
+  const normalizedId = normalizeCardIdValue(normalizedToken);
+  if (/^[a-z0-9]{6}$/i.test(normalizedId)) {
+    return searchIndex.fieldMap.id.some((entry) => normalizeCardIdValue(entry) === normalizedId);
+  }
+  return searchIndex.generalFields.some((entry) => entry.includes(normalizedToken));
 }
 
 function renderChips() {
@@ -425,13 +748,14 @@ function renderGrid() {
   if (!swords.length) {
     dom.grid.innerHTML = "";
     dom.empty.classList.add("show");
-    dom.empty.textContent = state.swords.length ? "No swords match the current filters." : "No swords are available right now.";
+    dom.empty.textContent = state.swords.length ? "No items match the current filters." : "No items are available right now.";
     return;
   }
 
   dom.empty.classList.remove("show");
   dom.grid.innerHTML = swords.slice(0, state.renderedSwordCount).map((sword, index) => buildCardMarkup(sword, index)).join("");
   updateSelectedCardState();
+  syncFavoriteIndicators();
   hydrateGridMedia();
   observeGridContinuation();
 }
@@ -445,6 +769,7 @@ function appendGridCards() {
   const start = state.renderedSwordCount;
   dom.grid.insertAdjacentHTML("beforeend", swords.slice(start, nextCount).map((sword, index) => buildCardMarkup(sword, start + index)).join(""));
   state.renderedSwordCount = nextCount;
+  syncFavoriteIndicators();
   hydrateGridMedia();
 }
 
@@ -476,14 +801,15 @@ function buildCardMarkup(sword, index = 0) {
   const trendClassName = sword.t.replace(/[^A-Za-z]/g, "") || "NA";
   const trendIcon = TREND_ICONS[sword.t] || TREND_ICONS["N/A"];
   const canEdit = canEditSword();
+  const favoriteIndicator = `<span class="card-favorite-indicator" aria-hidden="true"${isFavoriteSword(sword) ? "" : " hidden"}><svg viewBox="0 0 24 24" focusable="false"><path class="favorite-star-fill" d="M12 3.9 14.55 9l5.65.82-4.09 3.99.96 5.63L12 16.78 6.93 19.44l.97-5.63-4.1-3.99L9.45 9 12 3.9Z"/><path class="favorite-star-stroke" d="M12 3.9 14.55 9l5.65.82-4.09 3.99.96 5.63L12 16.78 6.93 19.44l.97-5.63-4.1-3.99L9.45 9 12 3.9Z"/></svg></span>`;
   return `
     <article class="card" data-card="${sword.id}" style="--tcolor:${getValueAccent(sword.v)}; --ccolor:${categoryColor}" aria-label="${escapeHtmlAttr(sword.n)} value card. Open for more information." tabindex="0">
       <div class="card-flip">
         <div class="card-face card-face-front${canEdit ? " card-face-front-has-actions" : ""}">
-          ${buildCardMediaMarkup(sword.img, sword.n, index)}
+          ${buildCardMediaMarkup(sword.img, sword.n, index, { favoriteIndicatorMarkup: favoriteIndicator })}
           <div class="card-body">
             <div class="card-top">
-              <div class="card-name">${escapeHtml(sword.n)}</div>
+              <div class="card-name-wrap"><div class="card-name">${escapeHtml(sword.n)}</div></div>
               <div class="cat-badge" style="color:${categoryColor}">${escapeHtml(sword.c)}</div>
             </div>
             <div class="card-meta">
@@ -491,7 +817,7 @@ function buildCardMarkup(sword, index = 0) {
               <div class="meta-item"><span class="k">Trend</span><span class="trend ${trendClassName}">${trendIcon}${escapeHtml(sword.t)}</span></div>
               <div class="meta-item"><span class="k">Count</span>${sword.ct ?? "-"}</div>
             </div>
-            <div class="card-value"><img class="value-token" src="/token.svg" alt="" aria-hidden="true">${formatValue(sword.v)}</div>
+            ${buildValueMarkup(sword, "card-value")}
             <div class="card-description">${escapeHtml(sword.descr || "No description added yet.")}</div>
           </div>
           <div class="card-footer">
@@ -514,16 +840,23 @@ function canEditSword() {
   return hasPermission("sword:update");
 }
 
+function buildValueMarkup(sword, className = "card-value") {
+  const valueText = sword.ownersChoice ? "O/C" : formatValue(sword.v);
+  const ownerChoiceCopy = sword.ownersChoice ? `<span class="value-owner-choice-copy">(Owner's Choice)</span>` : "";
+  return `<div class="${className}"><img class="value-token" src="/token.svg" alt="" aria-hidden="true">${escapeHtml(valueText)}${ownerChoiceCopy}</div>`;
+}
+
 function buildCardMediaMarkup(media, name, index = 0, options = {}) {
   const includeInitialSrc = options.includeInitialSrc !== false;
+  const favoriteIndicatorMarkup = options.favoriteIndicatorMarkup || "";
   if (!media) {
-    return '<div class="card-thumb"><img src="/images/unavailable.webp" alt="Unavailable" width="512" height="512" decoding="async" loading="lazy" fetchpriority="low"></div>';
+    return `<div class="card-thumb">${favoriteIndicatorMarkup}<img src="/images/unavailable.webp" alt="Unavailable" width="512" height="512" decoding="async" loading="lazy" fetchpriority="low"></div>`;
   }
   if (media.kind === "video") {
-    return `<div class="card-thumb"><video data-inline-video="1" data-src="${escapeHtmlAttr(getMediaUrl(media, "low"))}" muted loop playsinline preload="none" aria-label="${escapeHtmlAttr(name)} media"></video></div>`;
+    return `<div class="card-thumb">${favoriteIndicatorMarkup}<video data-inline-video="1" data-src="${escapeHtmlAttr(getMediaUrl(media, "low"))}" muted loop playsinline preload="none" aria-label="${escapeHtmlAttr(name)} media"></video></div>`;
   }
   if (media.kind === "audio") {
-    return '<div class="card-thumb"><img src="/images/unavailable.webp" alt="Unavailable" width="512" height="512" decoding="async" loading="lazy" fetchpriority="low"></div>';
+    return `<div class="card-thumb">${favoriteIndicatorMarkup}<img src="/images/unavailable.webp" alt="Unavailable" width="512" height="512" decoding="async" loading="lazy" fetchpriority="low"></div>`;
   }
   const lowUrl = getMediaUrl(media, "low");
   const eagerClass = index === 0 ? " eager-card-media" : "";
@@ -532,6 +865,7 @@ function buildCardMediaMarkup(media, name, index = 0, options = {}) {
   const initialSrcAttribute = includeInitialSrc ? `src="${escapeHtmlAttr(lowUrl)}"` : "";
   return `
     <div class="card-thumb${eagerClass}">
+      ${favoriteIndicatorMarkup}
       <img
         alt="${escapeHtmlAttr(name)}"
         width="512"
@@ -556,7 +890,9 @@ function normalizeSwordRecord(sword) {
     img: normalizeMediaField(sword.img),
     detailMedia: normalizeMediaField(sword.detailMedia),
     slashMedia: normalizeMediaField(sword.slashMedia),
-    slashAudio: normalizeMediaField(sword.slashAudio)
+    slashAudio: normalizeMediaField(sword.slashAudio),
+    finisherMedia: normalizeMediaField(sword.finisherMedia),
+    ownersChoice: Boolean(sword.ownersChoice)
   };
 }
 
@@ -602,6 +938,21 @@ function getMediaUrl(media, quality = "original") {
     return "";
   }
   return media[quality] || media.original || media.medium || media.low || "";
+}
+
+function hasRenderableMedia(media) {
+  if (!media) {
+    return false;
+  }
+  if (typeof media === "string") {
+    return media.trim().length > 0;
+  }
+  return Boolean(
+    String(media.key || "").trim()
+    || String(media.original || "").trim()
+    || String(media.medium || "").trim()
+    || String(media.low || "").trim()
+  );
 }
 
 function buildGridSkeletonMarkup() {
@@ -894,9 +1245,17 @@ function waitForImageSource(image, sourceUrl) {
 }
 
 function scheduleCardOverlay(card, swordId) {
+  state.hoverTimers.forEach((timer, key) => {
+    if (key !== swordId) {
+      clearTimeout(timer);
+      state.hoverTimers.delete(key);
+    }
+  });
   clearCardOverlay(card, swordId);
   const timer = window.setTimeout(() => {
+    hideCardOverlayExcept(swordId);
     card.classList.add("show-hover-overlay");
+    state.hoveredCardId = swordId;
   }, HOVER_DELAY_MS);
   state.hoverTimers.set(swordId, timer);
 }
@@ -911,6 +1270,137 @@ function clearCardOverlay(card, swordId) {
   }
   state.hoverTimers.delete(swordId);
   card.classList.remove("show-hover-overlay");
+  if (state.hoveredCardId === swordId) {
+    state.hoveredCardId = null;
+  }
+}
+
+function hideCardOverlayExcept(swordId = null) {
+  dom.grid.querySelectorAll(".show-hover-overlay").forEach((card) => {
+    if (Number(card.dataset.card) !== Number(swordId)) {
+      card.classList.remove("show-hover-overlay");
+    }
+  });
+  if (state.hoveredCardId !== null && Number(state.hoveredCardId) !== Number(swordId)) {
+    state.hoveredCardId = null;
+  }
+}
+
+function clearAllCardHoverState() {
+  dom.grid.querySelectorAll(".show-hover-overlay").forEach((card) => {
+    card.classList.remove("show-hover-overlay");
+  });
+  state.hoverTimers.forEach((timer) => clearTimeout(timer));
+  state.hoverTimers.clear();
+  state.hoveredCardId = null;
+}
+
+function isTouchLikePointerEvent(event) {
+  return event.pointerType === "touch" || event.pointerType === "pen" || window.matchMedia("(hover: none)").matches;
+}
+
+function clearTouchHold() {
+  if (state.touchHold.triggered && state.touchHold.cardId !== null && state.selectedCardId !== state.touchHold.cardId) {
+    const card = dom.grid.querySelector(`[data-card="${Number(state.touchHold.cardId)}"]`);
+    if (card) {
+      clearCardOverlay(card, state.touchHold.cardId);
+    }
+  }
+  if (state.touchHold.timer) {
+    clearTimeout(state.touchHold.timer);
+  }
+  state.touchHold = { timer: null, cardId: null, pointerId: null, triggered: false };
+}
+
+function beginTouchHold(card, swordId, pointerId) {
+  clearTouchHold();
+  const timer = window.setTimeout(() => {
+    state.touchHold.triggered = true;
+    hideCardOverlayExcept(swordId);
+    card.classList.add("show-hover-overlay");
+    state.hoveredCardId = swordId;
+  }, MOBILE_HOLD_DELAY_MS);
+  state.touchHold = { timer, cardId: swordId, pointerId, triggered: false };
+}
+
+function getRouteCardIdFromLocation() {
+  const url = new URL(window.location.href);
+  const itemParam = normalizeCardIdValue(url.searchParams.get("item"));
+  if (itemParam) {
+    return `#${itemParam}`;
+  }
+  const hashMatch = window.location.hash.match(/^#([A-Za-z0-9]{6})$/);
+  if (hashMatch) {
+    return `#${hashMatch[1]}`;
+  }
+  const pathMatch = window.location.pathname.match(/^\/([A-Za-z0-9]{6})\/?$/);
+  if (pathMatch) {
+    return `#${pathMatch[1]}`;
+  }
+  return null;
+}
+
+function ensureRouteToast() {
+  if (dom.routeToast) {
+    return dom.routeToast;
+  }
+  const toast = document.createElement("div");
+  toast.className = "route-toast";
+  toast.hidden = true;
+  toast.setAttribute("role", "status");
+  toast.setAttribute("aria-live", "polite");
+  toast.innerHTML = `
+    <div class="route-toast-message"></div>
+    <button class="route-toast-dismiss" type="button" aria-label="Dismiss notification">×</button>
+  `;
+  toast.querySelector(".route-toast-dismiss")?.addEventListener("click", () => {
+    window.clearTimeout(toast._hideTimer);
+    toast.classList.remove("show");
+    window.setTimeout(() => {
+      toast.hidden = true;
+    }, 180);
+  });
+  document.body.appendChild(toast);
+  dom.routeToast = toast;
+  return toast;
+}
+
+function showRouteToast(message) {
+  const toast = ensureRouteToast();
+  const messageNode = toast.querySelector(".route-toast-message");
+  if (messageNode) {
+    messageNode.textContent = message;
+  }
+  toast.hidden = false;
+  toast.classList.remove("show");
+  void toast.offsetWidth;
+  toast.classList.add("show");
+  window.clearTimeout(toast._hideTimer);
+  toast._hideTimer = window.setTimeout(() => {
+    toast.classList.remove("show");
+    window.setTimeout(() => {
+      toast.hidden = true;
+    }, 180);
+  }, 4600);
+}
+
+function buildCardShareUrl(cardId) {
+  const normalizedCardId = normalizeCardIdValue(cardId);
+  const url = new URL("/", window.location.origin);
+  url.searchParams.set("item", normalizedCardId);
+  return url.toString();
+}
+
+function updateItemRoute(cardId = null) {
+  const url = new URL(window.location.href);
+  url.pathname = "/";
+  url.hash = "";
+  if (cardId) {
+    url.searchParams.set("item", normalizeCardIdValue(cardId));
+  } else {
+    url.searchParams.delete("item");
+  }
+  window.history.replaceState({}, "", url.toString());
 }
 
 function getValueAccent(value) {
@@ -942,7 +1432,12 @@ function renderLastUpdated() {
   });
 }
 
-function openDetailModal(swordId) {
+function openDetailModal(swordId, options = {}) {
+  const { preserveRoute = false } = options;
+  const sword = findSword(swordId);
+  if (!sword) {
+    return;
+  }
   state.openingCardId = swordId;
   state.activeSwordId = swordId;
   state.editingSwordId = null;
@@ -950,8 +1445,12 @@ function openDetailModal(swordId) {
   updateSelectedCardState();
   dom.editPanel.hidden = true;
   updateDetailModalMode();
-  fillDetailPanel(findSword(swordId));
+  fillDetailPanel(sword);
   openModal(dom.detailModalOverlay);
+  if (!preserveRoute) {
+    updateItemRoute(sword.cardId);
+  }
+  clearAllCardHoverState();
 }
 
 function lockSelectedCardOpen(card, swordId) {
@@ -986,7 +1485,7 @@ function openEditModal(swordId, editorSystem = "v1") {
   state.selectedCardId = swordId;
   updateSelectedCardState();
   state.isAddingSword = false;
-  state.pendingMedia = { img: undefined, detailMedia: undefined, slashMedia: undefined, slashAudio: undefined };
+  state.pendingMedia = { img: undefined, detailMedia: undefined, slashMedia: undefined, slashAudio: undefined, finisherMedia: undefined };
   fillDetailPanel(sword);
   fillEditForm(sword);
   clearEditFormError();
@@ -994,6 +1493,7 @@ function openEditModal(swordId, editorSystem = "v1") {
   updateDetailModalMode();
   dom.deleteBtn.hidden = !hasPermission("sword:delete");
   openModal(dom.detailModalOverlay);
+  updateItemRoute(sword.cardId);
 }
 
 function openAddModal() {
@@ -1003,7 +1503,7 @@ function openAddModal() {
   state.selectedCardId = null;
   updateSelectedCardState();
   state.isAddingSword = true;
-  state.pendingMedia = { img: undefined, detailMedia: undefined, slashMedia: undefined, slashAudio: undefined };
+  state.pendingMedia = { img: undefined, detailMedia: undefined, slashMedia: undefined, slashAudio: undefined, finisherMedia: undefined };
   fillDetailPanel({
     cardId: "#------",
     n: "New Sword",
@@ -1017,7 +1517,9 @@ function openAddModal() {
     img: null,
     detailMedia: null,
     slashMedia: null,
-    slashAudio: null
+    slashAudio: null,
+    finisherMedia: null,
+    ownersChoice: false
   });
   clearEditForm();
   clearEditFormError();
@@ -1025,6 +1527,7 @@ function openAddModal() {
   updateDetailModalMode();
   dom.deleteBtn.hidden = true;
   openModal(dom.detailModalOverlay);
+  updateItemRoute(null);
 }
 
 function fillDetailPanel(sword) {
@@ -1034,8 +1537,15 @@ function fillDetailPanel(sword) {
   mediaRuntime.modalLoadToken += 1;
   const categoryColor = CATEGORY_COLORS[sword.c] || "#7d8aa3";
   const valueAccent = getValueAccent(sword.v);
+  const isExplosion = sword.c === "Explosions";
+  const isEmote = isEmoteCategory(sword.c);
+  const primaryLabel = isEmote ? "Animation Preview" : "VFX Preview";
+  const audioLabel = isEmote ? "Audio Preview" : "SFX Preview";
+  dom.detailShareBtn.textContent = "Share";
   dom.detailCardId.textContent = sword.cardId || "#------";
   dom.detailTitle.textContent = sword.n;
+  dom.detailPrimaryLabel.textContent = primaryLabel;
+  dom.detailAudioLabel.textContent = audioLabel;
   cleanupManagedMedia(dom.detailThumbWrap);
   dom.detailThumbWrap.innerHTML = buildCardMediaMarkup(sword.img, sword.n, 0, { includeInitialSrc: false });
   dom.detailThumbWrap.querySelector(".card-thumb")?.style.setProperty("--ccolor", categoryColor);
@@ -1055,20 +1565,28 @@ function fillDetailPanel(sword) {
   dom.detailModalOverlay.style.setProperty("--detail-value-accent", valueAccent);
   dom.detailModal?.style.setProperty("--detail-value-accent", valueAccent);
   dom.detailUpdated.textContent = `UPDATED ${formatShortDate(sword.u).toUpperCase()}`;
-  dom.detailValue.innerHTML = `<img class="value-token" src="/token.svg" alt="" aria-hidden="true">${escapeHtml(formatValue(sword.v))}`;
+  dom.detailValue.innerHTML = buildValueMarkup(sword, "detail-value-block card-value");
+  syncFavoriteButton(sword);
   dom.detailDemand.textContent = sword.d;
   dom.detailTrend.className = `trend ${sword.t.replace(/[^A-Za-z]/g, "") || "NA"}`;
   dom.detailTrend.innerHTML = `${TREND_ICONS[sword.t] || TREND_ICONS["N/A"]}${escapeHtml(sword.t)}`;
   dom.detailCount.textContent = sword.ct ?? "-";
   dom.detailDescription.textContent = sword.descr || "No description is available for this item yet.";
-  const isExplosion = sword.c === "Explosions";
+  const finisherEnabled = shouldRenderFinisherDetail(sword);
+  const hideSlashPreview = isExplosion || isEmote;
+  const detailMedia = normalizeMediaField(sword.detailMedia);
+  const finisherMedia = normalizeMediaField(sword.finisherMedia);
+  const usePrimaryAudioButton = isEmote && hasRenderableMedia(sword.detailMedia) && (detailMedia?.kind === "video" || hasRenderableMedia(sword.slashAudio));
   dom.detailMediaGrid?.classList.toggle("is-explosion", isExplosion);
-  dom.detailSlashCard.hidden = isExplosion;
-  dom.detailSlashCard?.classList.toggle("is-hidden-card", isExplosion);
+  dom.detailMediaGrid?.classList.toggle("is-emote", isEmote);
+  dom.detailMediaGrid?.classList.toggle("has-finisher", finisherEnabled);
+  dom.detailSlashCard.hidden = hideSlashPreview;
+  dom.detailSlashCard?.classList.toggle("is-hidden-card", hideSlashPreview);
+  dom.detailFinisherCard.hidden = !finisherEnabled || isExplosion || isEmote;
   syncDetailMediaDownload(dom.detailPrimaryDownload, sword.detailMedia, `${sword.n || "media"}-vfx`);
   const primaryControl = renderMediaShell(dom.detailPrimaryMedia, sword.detailMedia, sword.n, false, true);
   hydrateManagedContainer(dom.detailPrimaryMedia);
-  if (!isExplosion) {
+  if (!hideSlashPreview) {
     syncDetailMediaDownload(dom.detailSlashDownload, sword.slashMedia, `${sword.n || "media"}-slash`);
     renderMediaShell(dom.detailSlashMedia, sword.slashMedia, `${sword.n} slash preview`, false, true);
     hydrateManagedContainer(dom.detailSlashMedia);
@@ -1077,11 +1595,58 @@ function fillDetailPanel(sword) {
     cleanupManagedMedia(dom.detailSlashMedia);
     dom.detailSlashMedia.innerHTML = "";
   }
-  renderMediaShell(dom.detailSlashAudio, sword.slashAudio, `${sword.n} slash audio`, true);
+  renderAudioMediaShell(dom.detailSlashAudio, sword.slashAudio, `${sword.n} ${audioLabel.toLowerCase()}`, finisherEnabled);
+  syncDetailMediaDownload(dom.detailAudioDownload, sword.slashAudio, `${sword.n || "media"}-audio`);
+  const detailAudioCard = dom.detailSlashAudio.closest(".detail-media-card");
+  if (detailAudioCard) {
+    detailAudioCard.hidden = isEmote;
+  }
+  const detailAudio = dom.detailSlashAudio.querySelector("audio");
+  const primaryVideo = dom.detailPrimaryMedia.querySelector("video");
+  syncMediaAudioToggle(dom.detailPrimaryAudioBtn, primaryVideo, {
+    fallbackAudio: detailAudio,
+    enabled: usePrimaryAudioButton
+  });
+  syncMediaAudioToggle(dom.detailFinisherAudioBtn, null, { enabled: false });
+  detailAudio?.addEventListener("ended", () => {
+    syncMediaAudioToggle(dom.detailPrimaryAudioBtn, primaryVideo, {
+      fallbackAudio: detailAudio,
+      enabled: usePrimaryAudioButton
+    });
+  }, { once: true });
+  detailAudio?.addEventListener("pause", () => {
+    syncMediaAudioToggle(dom.detailPrimaryAudioBtn, primaryVideo, {
+      fallbackAudio: detailAudio,
+      enabled: usePrimaryAudioButton
+    });
+  });
+  detailAudio?.addEventListener("play", () => {
+    syncMediaAudioToggle(dom.detailPrimaryAudioBtn, primaryVideo, {
+      fallbackAudio: detailAudio,
+      enabled: usePrimaryAudioButton
+    });
+  });
+  if (finisherEnabled && !isExplosion && !isEmote) {
+    syncDetailMediaDownload(dom.detailFinisherDownload, sword.finisherMedia, `${sword.n || "media"}-finisher`);
+    renderMediaShell(dom.detailFinisherMedia, sword.finisherMedia, `${sword.n} finisher preview`, false, true);
+    hydrateManagedContainer(dom.detailFinisherMedia);
+    const finisherVideo = dom.detailFinisherMedia.querySelector("video");
+    syncMediaAudioToggle(dom.detailFinisherAudioBtn, finisherVideo, {
+      enabled: finisherMedia?.kind === "video"
+    });
+  } else {
+    syncDetailMediaDownload(dom.detailFinisherDownload, null, "");
+    cleanupManagedMedia(dom.detailFinisherMedia);
+    dom.detailFinisherMedia.innerHTML = finisherEnabled ? '<div class="detail-media-empty">No media available.</div>' : "";
+    syncMediaAudioToggle(dom.detailFinisherAudioBtn, null, { enabled: false });
+  }
   const modalToken = mediaRuntime.modalLoadToken;
   void scheduleModalHighRes(primaryControl, modalToken);
-  if (!isExplosion) {
+  if (!hideSlashPreview) {
     void scheduleModalHighRes(dom.detailSlashMedia.querySelector("[data-managed-image='modal']"), modalToken);
+  }
+  if (finisherEnabled && !isExplosion && !isEmote) {
+    void scheduleModalHighRes(dom.detailFinisherMedia.querySelector("[data-managed-image='modal']"), modalToken);
   }
 }
 
@@ -1124,6 +1689,90 @@ function detectMediaExtension(url, kind = "image") {
   return "webp";
 }
 
+function isOwnersChoiceValue(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "oc" || normalized === "o/c";
+}
+
+function canUseOwnersChoice(countValue) {
+  return Number.isFinite(Number(countValue)) && Number(countValue) < 5;
+}
+
+function getCurrentCountValue(baseSword = null) {
+  if (dom.fields.count.value === "") {
+    return baseSword?.ct ?? null;
+  }
+  return Number(dom.fields.count.value);
+}
+
+function shouldEnableFinisherMode(nameValue = "") {
+  if (state.editorSystem === "v2") {
+    return /\bwith finisher\b|\bfinisher\b/i.test(String(nameValue || ""));
+  }
+  return Boolean(dom.fields.finisherEnabled?.checked);
+}
+
+function shouldRenderFinisherDetail(sword) {
+  const hasSavedFinisher = hasRenderableMedia(sword?.finisherMedia);
+  const isEditing = state.activeModal === dom.detailModalOverlay?.id && !dom.editPanel.hidden;
+  if (!isEditing) {
+    return hasSavedFinisher;
+  }
+  if (state.editorSystem === "v2") {
+    return hasSavedFinisher || /\bwith finisher\b|\bfinisher\b/i.test(String(sword?.n || ""));
+  }
+  return hasSavedFinisher || Boolean(dom.fields.finisherEnabled?.checked);
+}
+
+function getPreviewAudioLabel(isPlaying) {
+  return isPlaying ? "Pause" : "Play";
+}
+
+function getAudioToggleLabel(isEnabled) {
+  return isEnabled ? "🔊" : "🔇";
+}
+
+function syncMediaAudioToggle(button, mediaElement, { fallbackAudio = null, enabled = false } = {}) {
+  if (!button) {
+    return;
+  }
+  if (!enabled) {
+    button.hidden = true;
+    button.textContent = getAudioToggleLabel(false);
+    return;
+  }
+  const isVideo = mediaElement instanceof HTMLVideoElement;
+  const isAudio = fallbackAudio instanceof HTMLAudioElement;
+  if (!isVideo && !isAudio) {
+    button.hidden = true;
+    button.textContent = getAudioToggleLabel(false);
+    return;
+  }
+  const isActive = isVideo ? !mediaElement.muted : !fallbackAudio.paused;
+  button.hidden = false;
+  button.textContent = getAudioToggleLabel(isActive);
+}
+
+function toggleMediaAudio(button, mediaElement, { fallbackAudio = null } = {}) {
+  if (mediaElement instanceof HTMLVideoElement) {
+    mediaElement.muted = !mediaElement.muted;
+    if (mediaElement.paused) {
+      mediaElement.play().catch(() => {});
+    }
+    button.textContent = getAudioToggleLabel(!mediaElement.muted);
+    return;
+  }
+  if (fallbackAudio instanceof HTMLAudioElement) {
+    if (fallbackAudio.paused) {
+      fallbackAudio.play().catch(() => {});
+      button.textContent = getAudioToggleLabel(true);
+      return;
+    }
+    fallbackAudio.pause();
+    button.textContent = getAudioToggleLabel(false);
+  }
+}
+
 function renderMediaShell(target, source, label, audioOnly = false, loadLowImmediately = false) {
   cleanupManagedMedia(target);
   if (!source) {
@@ -1157,10 +1806,32 @@ function renderMediaShell(target, source, label, audioOnly = false, loadLowImmed
   return image;
 }
 
+function renderAudioMediaShell(target, source, label, boxed = false) {
+  target.classList.toggle("detail-media-shell-audio-box", boxed);
+  if (!source) {
+    target.innerHTML = `<div class="detail-media-empty">${boxed ? "No audio available." : "No audio available."}</div>`;
+    return;
+  }
+  const media = normalizeMediaField(source);
+  const audioUrl = getMediaUrl(media, "original");
+  if (!boxed) {
+    target.innerHTML = `<audio controls preload="none" src="${escapeHtmlAttr(audioUrl)}" aria-label="${escapeHtmlAttr(label)}"></audio>`;
+    return;
+  }
+  target.innerHTML = `
+    <div class="detail-audio-box">
+      <button class="detail-audio-play" type="button" data-detail-audio-play>${getPreviewAudioLabel(false)}</button>
+      <div class="detail-audio-copy">SFX preview ready</div>
+      <audio preload="none" src="${escapeHtmlAttr(audioUrl)}" aria-label="${escapeHtmlAttr(label)}"></audio>
+    </div>
+  `;
+}
+
 function fillEditForm(sword) {
   dom.fields.name.value = sword.n;
   dom.fields.category.value = sword.c;
-  dom.fields.value.value = sword.v;
+  dom.fields.value.value = sword.ownersChoice ? "O/C" : String(sword.v);
+  dom.fields.value.dataset.lastNumericValue = String(sword.v ?? 0);
   dom.fields.demand.value = sword.d;
   dom.fields.trend.value = sword.t;
   dom.fields.count.value = sword.ct ?? "";
@@ -1169,14 +1840,20 @@ function fillEditForm(sword) {
   dom.fields.detailMedia.value = "";
   dom.fields.slashMedia.value = "";
   dom.fields.slashAudio.value = "";
+  dom.fields.finisherMedia.value = "";
   setPreview(dom.fields.imagePreview, sword.img, "No media");
   setPreview(dom.fields.detailPreview, sword.detailMedia, "No VFX preview");
   setPreview(dom.fields.slashPreview, sword.slashMedia, "No slash preview");
   setPreview(dom.fields.audioPreview, sword.slashAudio, "No SFX preview", true);
+  setPreview(dom.fields.finisherPreview, sword.finisherMedia, "No finisher preview");
   dom.fields.imageRemove.hidden = !sword.img;
   dom.fields.detailRemove.hidden = !sword.detailMedia;
   dom.fields.slashRemove.hidden = !sword.slashMedia;
   dom.fields.audioRemove.hidden = !sword.slashAudio;
+  dom.fields.finisherRemove.hidden = !hasRenderableMedia(sword.finisherMedia);
+  dom.fields.finisherEnabled.checked = hasRenderableMedia(sword.finisherMedia);
+  syncCategorySpecificFields();
+  syncFinisherControls();
   syncDetailPreviewFromEditor();
 }
 
@@ -1192,15 +1869,41 @@ function clearEditForm() {
   dom.fields.detailMedia.value = "";
   dom.fields.slashMedia.value = "";
   dom.fields.slashAudio.value = "";
+  dom.fields.finisherMedia.value = "";
+  dom.fields.value.dataset.lastNumericValue = "0";
   setPreview(dom.fields.imagePreview, null, "No media");
   setPreview(dom.fields.detailPreview, null, "No VFX preview");
   setPreview(dom.fields.slashPreview, null, "No slash preview");
   setPreview(dom.fields.audioPreview, null, "No SFX preview");
+  setPreview(dom.fields.finisherPreview, null, "No finisher preview");
   dom.fields.imageRemove.hidden = true;
   dom.fields.detailRemove.hidden = true;
   dom.fields.slashRemove.hidden = true;
   dom.fields.audioRemove.hidden = true;
+  dom.fields.finisherRemove.hidden = true;
+  dom.fields.finisherEnabled.checked = false;
+  syncCategorySpecificFields();
+  syncFinisherControls();
   syncDetailPreviewFromEditor();
+}
+
+function syncCategorySpecificFields() {
+  const isEmote = isEmoteCategory(dom.fields.category.value);
+  if (dom.fields.detailLabel) {
+    dom.fields.detailLabel.textContent = isEmote ? "Animation Preview" : "VFX Preview";
+  }
+  if (dom.fields.audioLabel) {
+    dom.fields.audioLabel.textContent = isEmote ? "Audio Preview" : "SFX Preview";
+  }
+  if (dom.fields.slashField) {
+    dom.fields.slashField.hidden = isEmote;
+  }
+  if (isEmote) {
+    dom.fields.slashMedia.value = "";
+    state.pendingMedia.slashMedia = null;
+    setPreview(dom.fields.slashPreview, null, "No slash preview");
+    dom.fields.slashRemove.hidden = true;
+  }
 }
 
 function setPreview(target, source, emptyText, forceAudio = false) {
@@ -1228,27 +1931,39 @@ async function handleEditSubmit(event) {
   setEditFormBusy(true, hasPendingMediaUpload());
 
   try {
+    const baseSword = state.isAddingSword ? null : findSword(state.activeSwordId);
+    const countValue = getCurrentCountValue(baseSword);
+    const rawValue = dom.fields.value.value.trim();
+    const ownersChoice = isOwnersChoiceValue(rawValue);
+    if (ownersChoice && !canUseOwnersChoice(countValue)) {
+      throw new Error("Owner's Choice can only be used when count is below 5.");
+    }
+    if (!ownersChoice && rawValue !== "" && /^\d+$/.test(rawValue)) {
+      dom.fields.value.dataset.lastNumericValue = rawValue;
+    }
     const payload = await uploadPendingMedia({
       n: dom.fields.name.value.trim(),
       c: dom.fields.category.value,
-      v: Number(dom.fields.value.value),
+      v: ownersChoice ? Number(dom.fields.value.dataset.lastNumericValue || baseSword?.v || 0) : Number(rawValue),
       d: dom.fields.demand.value,
       t: dom.fields.trend.value,
-      ct: dom.fields.count.value === "" ? null : Number(dom.fields.count.value),
+      ct: countValue,
       descr: dom.fields.description.value,
       img: state.pendingMedia.img,
       detailMedia: state.pendingMedia.detailMedia,
-      slashMedia: state.pendingMedia.slashMedia,
-      slashAudio: state.pendingMedia.slashAudio
+      slashMedia: isEmoteCategory(dom.fields.category.value) ? null : state.pendingMedia.slashMedia,
+      slashAudio: state.pendingMedia.slashAudio,
+      finisherMedia: isEmoteCategory(dom.fields.category.value) ? null : (shouldEnableFinisherMode(dom.fields.name.value.trim()) ? state.pendingMedia.finisherMedia : null),
+      oc: ownersChoice
     });
 
     if (state.isAddingSword) {
       const { sword } = await api("/swords", { method: "POST", body: JSON.stringify(payload) });
-      state.swords.unshift(sword);
+      upsertSwordRecord(sword);
     } else {
-      await api(`/swords/${state.editingSwordId}`, { method: "PUT", body: JSON.stringify(payload) });
+      const { sword } = await api(`/swords/${state.editingSwordId}`, { method: "PUT", body: JSON.stringify(payload) });
+      upsertSwordRecord(sword);
     }
-    await refreshSwords();
     closeModal(dom.detailModalOverlay);
   } catch (error) {
     showEditFormError(error);
@@ -1269,7 +1984,7 @@ async function handleDeleteSword() {
 
   try {
     await api(`/swords/${state.editingSwordId}`, { method: "DELETE" });
-    await refreshSwords();
+    removeSwordRecord(state.editingSwordId);
     closeModal(dom.detailModalOverlay);
   } catch (error) {
     showEditFormError(error);
@@ -1363,7 +2078,7 @@ function renderAuditList() {
         ` : ""}
       </header>
       <div class="audit-diff-list">
-        ${(log.diff || []).map((diff) => `
+        ${getAuditDiffEntries(log.diff).map((diff) => `
           <div class="audit-diff-row">
             <span>${escapeHtml(diff.field)}</span>
             <code>${escapeHtml(JSON.stringify(diff.from))}</code>
@@ -1407,6 +2122,20 @@ function formatAuditActor(log) {
   return log.actorRole || "Unknown";
 }
 
+function getAuditDiffEntries(diff) {
+  if (Array.isArray(diff)) {
+    return diff;
+  }
+  if (diff && typeof diff === "object") {
+    return Object.entries(diff).map(([field, next]) => ({
+      field,
+      from: next?.from ?? null,
+      to: next?.to ?? null
+    }));
+  }
+  return [];
+}
+
 function openProtectedConfirmation(type, onConfirm) {
   const config = CONFIRMATIONS[type];
   state.confirmState = { type, onConfirm };
@@ -1430,6 +2159,7 @@ function startDiscordAuth(purpose = "login") {
 function handleLoginFlags() {
   const url = new URL(window.location.href);
   const login = url.searchParams.get("login");
+  state.lastLoginFlag = login || "";
   if (!login) {
     return;
   }
@@ -1437,9 +2167,63 @@ function handleLoginFlags() {
   window.history.replaceState({}, "", url.toString());
 }
 
+function findSwordByCardId(cardId) {
+  return state.swords.find((item) => normalizeCardIdValue(item.cardId) === normalizeCardIdValue(cardId)) || null;
+}
+
+function syncRouteModalFromLocation() {
+  const routeCardId = getRouteCardIdFromLocation();
+  if (!routeCardId) {
+    state.routeNoticeKey = "";
+    if (state.activeModal === dom.detailModalOverlay.id && !state.editingSwordId) {
+      closeModal(dom.detailModalOverlay, { preserveRoute: true });
+    }
+    return;
+  }
+  const sword = findSwordByCardId(routeCardId);
+  if (!sword) {
+    const missingKey = normalizeCardIdValue(routeCardId);
+    if (state.routeNoticeKey !== missingKey) {
+      state.routeNoticeKey = missingKey;
+      updateItemRoute(null);
+      showRouteToast(`The item ID ${routeCardId} could not be found.`);
+    }
+    return;
+  }
+  state.routeNoticeKey = "";
+  if (state.activeModal === dom.detailModalOverlay.id && state.activeSwordId === sword.id && !state.editingSwordId) {
+    return;
+  }
+  openDetailModal(sword.id, { preserveRoute: true });
+}
+
+async function shareActiveSword() {
+  const sword = findSword(state.activeSwordId);
+  if (!sword?.cardId) {
+    return;
+  }
+  const shareUrl = buildCardShareUrl(sword.cardId);
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(shareUrl);
+      dom.detailShareBtn.textContent = "Copied";
+    } else {
+      window.prompt("Copy this BBTSL link", shareUrl);
+      dom.detailShareBtn.textContent = "Ready";
+    }
+  } catch {
+    dom.detailShareBtn.textContent = "Share";
+    return;
+  }
+  window.setTimeout(() => {
+    dom.detailShareBtn.textContent = "Share";
+  }, 1600);
+}
+
 async function logout() {
   await api("/auth/logout", { method: "POST" });
-  state.auth = { authenticated: false, user: null, permissions: [], reauthFresh: false };
+  state.auth = { authenticated: false, user: null, permissions: [], reauthFresh: false, canUseSystemAccount: false, systemMode: false };
+  loadFavoriteCardIds();
   renderShell();
   renderGrid();
 }
@@ -1465,42 +2249,153 @@ function closeShortcutLoginModal() {
   closeModal(dom.shortcutLoginOverlay);
 }
 
+function openAccountChoiceModal() {
+  if (!dom.accountChoiceOverlay || !state.auth?.user) {
+    return;
+  }
+  const authUser = state.auth.user;
+  const displayName = authUser.displayName || authUser.globalName || authUser.username || "Your account";
+  const roleText = authUser.displayRole || authUser.role || "Discord account";
+  if (authUser.avatarUrl) {
+    const avatar = document.createElement("img");
+    avatar.className = "account-choice-avatar";
+    avatar.id = "accountChoiceActualAvatar";
+    avatar.src = authUser.avatarUrl;
+    avatar.alt = displayName;
+    dom.accountChoiceActualAvatar.replaceWith(avatar);
+    dom.accountChoiceActualAvatar = avatar;
+  } else {
+    const avatar = document.createElement("div");
+    avatar.className = "account-choice-avatar identity-avatar identity-avatar-fallback";
+    avatar.id = "accountChoiceActualAvatar";
+    avatar.textContent = "?";
+    dom.accountChoiceActualAvatar.replaceWith(avatar);
+    dom.accountChoiceActualAvatar = avatar;
+  }
+  dom.accountChoiceActualName.textContent = displayName;
+  dom.accountChoiceActualRole.textContent = roleText;
+  openModal(dom.accountChoiceOverlay);
+  dom.accountChoiceActualBtn?.focus();
+}
+
+function closeAccountChoiceModal() {
+  if (!dom.accountChoiceOverlay) {
+    return;
+  }
+  closeModal(dom.accountChoiceOverlay);
+}
+
+function maybeOpenAccountChoice() {
+  if (state.lastLoginFlag !== "success") {
+    return;
+  }
+  if (!state.auth?.authenticated || state.auth.systemMode || !state.auth.canUseSystemAccount) {
+    return;
+  }
+  if (String(state.auth.user?.discordUserId || "") !== SYSTEM_ACCOUNT_ELIGIBLE_DISCORD_ID) {
+    return;
+  }
+  state.lastLoginFlag = "";
+  openAccountChoiceModal();
+}
+
+async function activateSystemAccount() {
+  await api("/auth/system-session", { method: "POST" });
+  closeAccountChoiceModal();
+  await refreshSwords();
+}
+
 function openModal(overlay) {
+  if (!overlay) {
+    return;
+  }
+  const activeElement = document.activeElement;
+  if (activeElement instanceof HTMLElement && !overlay.contains(activeElement)) {
+    state.restoreFocusTo = activeElement;
+  }
   overlay.hidden = false;
   overlay.classList.add("show");
+  state.modalStack = [...state.modalStack.filter((id) => id !== overlay.id), overlay.id];
   state.activeModal = overlay.id;
   document.body.classList.add("modal-open");
 }
 
-function closeModal(overlay) {
+function closeModal(overlay, options = {}) {
+  if (!overlay) {
+    return;
+  }
+  const { preserveRoute = false } = options;
   overlay.classList.remove("show");
   overlay.hidden = true;
-  if (state.activeModal === overlay.id) {
-    state.activeModal = null;
-    document.body.classList.remove("modal-open");
-  }
+  state.modalStack = state.modalStack.filter((id) => id !== overlay.id);
+  state.activeModal = state.modalStack[state.modalStack.length - 1] || null;
+  document.body.classList.toggle("modal-open", Boolean(state.activeModal));
   if (overlay === dom.detailModalOverlay) {
     state.openingCardId = null;
+    state.activeSwordId = null;
+    state.editingSwordId = null;
+    state.isAddingSword = false;
     mediaRuntime.modalLoadToken += 1;
     [dom.detailThumbWrap, dom.detailPrimaryMedia, dom.detailSlashMedia].forEach((target) => cleanupManagedMedia(target));
     state.selectedCardId = null;
     updateSelectedCardState();
-    dom.grid.querySelectorAll(".show-hover-overlay").forEach((card) => {
-      card.classList.remove("show-hover-overlay");
-    });
-    state.hoverTimers.forEach((timer) => clearTimeout(timer));
-    state.hoverTimers.clear();
+    clearAllCardHoverState();
+    clearTouchHold();
     dom.editPanel.hidden = true;
     updateDetailModalMode();
+    if (!preserveRoute && getRouteCardIdFromLocation()) {
+      updateItemRoute(null);
+    }
   }
   if (overlay === dom.editorSystemOverlay) {
     state.pendingEditSwordId = null;
+  }
+  if (state.restoreFocusTo instanceof HTMLElement && state.restoreFocusTo.isConnected) {
+    window.requestAnimationFrame(() => state.restoreFocusTo?.focus());
+  }
+  state.restoreFocusTo = null;
+}
+
+function getModalFocusableElements(overlay) {
+  if (!overlay) {
+    return [];
+  }
+  return [...overlay.querySelectorAll('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+    .filter((element) => !element.hidden && element.offsetParent !== null);
+}
+
+function trapActiveModalFocus(event) {
+  if (event.key !== "Tab" || !state.activeModal) {
+    return;
+  }
+  const overlay = document.getElementById(state.activeModal);
+  if (!overlay) {
+    return;
+  }
+  const focusable = getModalFocusableElements(overlay);
+  if (!focusable.length) {
+    event.preventDefault();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+    return;
+  }
+  if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
   }
 }
 
 function updateSelectedCardState() {
   dom.grid.querySelectorAll("[data-card]").forEach((card) => {
     card.classList.toggle("selected-open-card", Number(card.dataset.card) === state.selectedCardId);
+    if (state.selectedCardId !== null && Number(card.dataset.card) !== state.selectedCardId) {
+      card.classList.remove("show-hover-overlay");
+    }
   });
 }
 
@@ -1512,6 +2407,22 @@ function updateDetailModalMode() {
 
 function findSword(id) {
   return state.swords.find((item) => item.id === id) || null;
+}
+
+function upsertSwordRecord(sword) {
+  const normalized = normalizeSwordRecord(sword);
+  const nextSwords = [...state.swords];
+  const existingIndex = nextSwords.findIndex((item) => item.id === normalized.id);
+  if (existingIndex === -1) {
+    nextSwords.push(normalized);
+  } else {
+    nextSwords[existingIndex] = normalized;
+  }
+  applySwordState(nextSwords);
+}
+
+function removeSwordRecord(id) {
+  applySwordState(state.swords.filter((item) => item.id !== id));
 }
 
 function getFileExtension(fileName) {
@@ -1639,22 +2550,51 @@ function syncDetailPreviewFromEditor() {
     return;
   }
   const baseSword = state.isAddingSword ? null : findSword(state.activeSwordId);
+  const countValue = getCurrentCountValue(baseSword);
+  const finisherEnabled = shouldEnableFinisherMode(dom.fields.name.value.trim() || baseSword?.n || "");
+  const ownersChoice = isOwnersChoiceValue(dom.fields.value.value);
+  const isEmote = isEmoteCategory(dom.fields.category.value || baseSword?.c || "");
   const previewSword = {
     cardId: baseSword?.cardId || "#------",
     n: dom.fields.name.value.trim() || baseSword?.n || "New Sword",
     c: dom.fields.category.value || baseSword?.c || "Other Swords",
-    v: dom.fields.value.value === "" ? (baseSword?.v ?? 0) : Number(dom.fields.value.value),
+    v: ownersChoice ? Number(dom.fields.value.dataset.lastNumericValue || baseSword?.v || 0) : (dom.fields.value.value === "" ? (baseSword?.v ?? 0) : Number(dom.fields.value.value)),
     d: dom.fields.demand.value || baseSword?.d || "Medium",
     t: dom.fields.trend.value || baseSword?.t || "Stable",
-    ct: dom.fields.count.value === "" ? (baseSword?.ct ?? null) : Number(dom.fields.count.value),
+    ct: countValue,
     u: baseSword?.u || new Date().toISOString().slice(0, 10),
     descr: dom.fields.description.value || baseSword?.descr || "",
     img: state.pendingMedia.img !== undefined ? state.pendingMedia.img : (baseSword?.img || null),
     detailMedia: state.pendingMedia.detailMedia !== undefined ? state.pendingMedia.detailMedia : (baseSword?.detailMedia || null),
-    slashMedia: state.pendingMedia.slashMedia !== undefined ? state.pendingMedia.slashMedia : (baseSword?.slashMedia || null),
-    slashAudio: state.pendingMedia.slashAudio !== undefined ? state.pendingMedia.slashAudio : (baseSword?.slashAudio || null)
+    slashMedia: isEmote ? null : (state.pendingMedia.slashMedia !== undefined ? state.pendingMedia.slashMedia : (baseSword?.slashMedia || null)),
+    slashAudio: state.pendingMedia.slashAudio !== undefined ? state.pendingMedia.slashAudio : (baseSword?.slashAudio || null),
+    finisherMedia: isEmote ? null : (finisherEnabled ? (state.pendingMedia.finisherMedia !== undefined ? state.pendingMedia.finisherMedia : (baseSword?.finisherMedia || null)) : null),
+    ownersChoice
   };
   fillDetailPanel(previewSword);
+}
+
+function syncFinisherControls() {
+  if (isEmoteCategory(dom.fields.category.value)) {
+    dom.fields.finisherField.hidden = true;
+    dom.fields.finisherEnabled.checked = false;
+    dom.fields.finisherMedia.value = "";
+    state.pendingMedia.finisherMedia = null;
+    setPreview(dom.fields.finisherPreview, null, "No finisher preview");
+    dom.fields.finisherRemove.hidden = true;
+    return;
+  }
+  const enabled = shouldEnableFinisherMode(dom.fields.name.value.trim());
+  dom.fields.finisherField.hidden = !enabled;
+  if (state.editorSystem === "v2") {
+    dom.fields.finisherEnabled.checked = enabled;
+  }
+  if (!enabled) {
+    dom.fields.finisherMedia.value = "";
+    state.pendingMedia.finisherMedia = null;
+    setPreview(dom.fields.finisherPreview, null, "No finisher preview");
+    dom.fields.finisherRemove.hidden = true;
+  }
 }
 
 function getRemoveButtonForKey(key) {
@@ -1667,6 +2607,8 @@ function getRemoveButtonForKey(key) {
       return dom.fields.slashRemove;
     case "slashAudio":
       return dom.fields.audioRemove;
+    case "finisherMedia":
+      return dom.fields.finisherRemove;
     default:
       return null;
   }
@@ -1697,11 +2639,46 @@ function attachEvents() {
   });
 
   dom.grid.addEventListener("pointerdown", (event) => {
+    const editButton = event.target.closest("[data-edit]");
+    if (editButton) {
+      return;
+    }
     const card = event.target.closest("[data-card]");
     if (!card) {
       return;
     }
-    lockSelectedCardOpen(card, Number(card.dataset.card));
+    if (isTouchLikePointerEvent(event)) {
+      beginTouchHold(card, Number(card.dataset.card), event.pointerId);
+    }
+  });
+
+  dom.grid.addEventListener("pointerup", (event) => {
+    if (!isTouchLikePointerEvent(event)) {
+      return;
+    }
+    const card = event.target.closest("[data-card]");
+    if (card && state.touchHold.triggered && state.selectedCardId !== Number(card.dataset.card)) {
+      clearCardOverlay(card, Number(card.dataset.card));
+    }
+    clearTouchHold();
+  });
+
+  dom.grid.addEventListener("pointercancel", () => {
+    clearTouchHold();
+    clearAllCardHoverState();
+  });
+
+  dom.grid.addEventListener("contextmenu", (event) => {
+    const card = event.target.closest("[data-card]");
+    if (!card) {
+      return;
+    }
+    clearCardOverlay(card, Number(card.dataset.card));
+  });
+
+  window.addEventListener("blur", () => {
+    clearTouchHold();
+    clearAllCardHoverState();
   });
 
   dom.grid.addEventListener("keydown", (event) => {
@@ -1778,16 +2755,60 @@ function attachEvents() {
     field.addEventListener("input", syncDetailPreviewFromEditor);
     field.addEventListener("change", syncDetailPreviewFromEditor);
   });
+  dom.fields.category.addEventListener("change", () => {
+    syncCategorySpecificFields();
+    syncFinisherControls();
+    syncDetailPreviewFromEditor();
+  });
+  dom.fields.name.addEventListener("input", syncFinisherControls);
+  dom.fields.count.addEventListener("input", () => {
+    if (!isOwnersChoiceValue(dom.fields.value.value) && /^\d+$/.test(dom.fields.value.value.trim())) {
+      dom.fields.value.dataset.lastNumericValue = dom.fields.value.value.trim();
+    }
+  });
+  dom.fields.value.addEventListener("input", () => {
+    const rawValue = dom.fields.value.value.trim();
+    if (/^\d+$/.test(rawValue)) {
+      dom.fields.value.dataset.lastNumericValue = rawValue;
+      return;
+    }
+    if (rawValue !== "" && !isOwnersChoiceValue(rawValue)) {
+      dom.fields.value.value = rawValue.replace(/[^0-9/ocOC]/g, "");
+    }
+  });
+  dom.fields.finisherEnabled.addEventListener("change", () => {
+    syncFinisherControls();
+    syncDetailPreviewFromEditor();
+  });
 
   dom.fields.image.addEventListener("change", (event) => handleFileInput(event, "img", dom.fields.imagePreview, "No media"));
   dom.fields.detailMedia.addEventListener("change", (event) => handleFileInput(event, "detailMedia", dom.fields.detailPreview, "No VFX preview"));
   dom.fields.slashMedia.addEventListener("change", (event) => handleFileInput(event, "slashMedia", dom.fields.slashPreview, "No slash preview"));
   dom.fields.slashAudio.addEventListener("change", (event) => handleFileInput(event, "slashAudio", dom.fields.audioPreview, "No SFX preview"));
+  dom.fields.finisherMedia.addEventListener("change", (event) => handleFileInput(event, "finisherMedia", dom.fields.finisherPreview, "No finisher preview"));
 
   dom.fields.imageRemove.addEventListener("click", () => clearPendingMedia("img", dom.fields.imagePreview, "No media", dom.fields.imageRemove));
   dom.fields.detailRemove.addEventListener("click", () => clearPendingMedia("detailMedia", dom.fields.detailPreview, "No VFX preview", dom.fields.detailRemove));
   dom.fields.slashRemove.addEventListener("click", () => clearPendingMedia("slashMedia", dom.fields.slashPreview, "No slash preview", dom.fields.slashRemove));
   dom.fields.audioRemove.addEventListener("click", () => clearPendingMedia("slashAudio", dom.fields.audioPreview, "No SFX preview", dom.fields.audioRemove));
+  dom.fields.finisherRemove.addEventListener("click", () => clearPendingMedia("finisherMedia", dom.fields.finisherPreview, "No finisher preview", dom.fields.finisherRemove));
+  dom.detailPrimaryAudioBtn?.addEventListener("click", () => {
+    toggleMediaAudio(
+      dom.detailPrimaryAudioBtn,
+      dom.detailPrimaryMedia.querySelector("video"),
+      { fallbackAudio: dom.detailSlashAudio.querySelector("audio") }
+    );
+  });
+  dom.detailFinisherAudioBtn?.addEventListener("click", () => {
+    toggleMediaAudio(
+      dom.detailFinisherAudioBtn,
+      dom.detailFinisherMedia.querySelector("video")
+    );
+  });
+  dom.detailShareBtn?.addEventListener("click", () => {
+    void shareActiveSword();
+  });
+  dom.detailFavoriteBtn?.addEventListener("click", toggleActiveFavorite);
 
   dom.auditCloseBtn.addEventListener("click", () => closeModal(dom.auditModalOverlay));
   dom.auditRefreshBtn.addEventListener("click", refreshAudit);
@@ -1810,7 +2831,7 @@ function attachEvents() {
     await state.confirmState?.onConfirm?.();
   });
 
-  [dom.detailModalOverlay, dom.editorSystemOverlay, dom.auditModalOverlay, dom.confirmModalOverlay, dom.mobileUtilityOverlay, dom.shortcutLoginOverlay].filter(Boolean).forEach((overlay) => {
+  [dom.detailModalOverlay, dom.editorSystemOverlay, dom.auditModalOverlay, dom.confirmModalOverlay, dom.mobileUtilityOverlay, dom.shortcutLoginOverlay, dom.favoriteLoginOverlay, dom.accountChoiceOverlay].filter(Boolean).forEach((overlay) => {
     overlay.addEventListener("click", (event) => {
       if (event.target === overlay) {
         closeModal(overlay);
@@ -1819,6 +2840,7 @@ function attachEvents() {
   });
 
   document.addEventListener("keydown", (event) => {
+    trapActiveModalFocus(event);
     if (event.key === "Escape") {
       if (state.activeModal === dom.detailModalOverlay.id) {
         closeModal(dom.detailModalOverlay);
@@ -1830,15 +2852,30 @@ function attachEvents() {
         closeModal(dom.mobileUtilityOverlay);
       } else if (dom.shortcutLoginOverlay && state.activeModal === dom.shortcutLoginOverlay.id) {
         closeShortcutLoginModal();
+      } else if (dom.favoriteLoginOverlay && state.activeModal === dom.favoriteLoginOverlay.id) {
+        closeFavoriteLoginModal();
+      } else if (dom.accountChoiceOverlay && state.activeModal === dom.accountChoiceOverlay.id) {
+        closeAccountChoiceModal();
       } else if (state.activeModal === dom.confirmModalOverlay.id) {
         closeConfirmModal();
       }
     }
   });
   document.addEventListener("keydown", handleShortcutAuth);
+  window.addEventListener("popstate", syncRouteModalFromLocation);
   dom.shortcutLoginCloseBtn?.addEventListener("click", closeShortcutLoginModal);
   dom.shortcutLoginCancelBtn?.addEventListener("click", closeShortcutLoginModal);
   dom.shortcutLoginBtn?.addEventListener("click", () => startDiscordAuth("login"));
+  dom.favoriteLoginCloseBtn?.addEventListener("click", closeFavoriteLoginModal);
+  dom.favoriteLoginCancelBtn?.addEventListener("click", closeFavoriteLoginModal);
+  dom.favoriteLoginBtn?.addEventListener("click", () => startDiscordAuth("login"));
+  dom.accountChoiceCloseBtn?.addEventListener("click", closeAccountChoiceModal);
+  dom.accountChoiceActualBtn?.addEventListener("click", closeAccountChoiceModal);
+  dom.accountChoiceSystemBtn?.addEventListener("click", () => {
+    void activateSystemAccount().catch((error) => {
+      window.alert(error?.message || "Could not switch to the BBTSL System account.");
+    });
+  });
   bindMobileUtilityControls();
 }
 
@@ -1860,5 +2897,5 @@ initialize().catch((error) => {
   state.isGridLoading = false;
   renderGrid();
   dom.empty.classList.add("show");
-  dom.empty.textContent = error.message || "Could not load the value list.";
+  dom.empty.textContent = error.message || "Could not load the item list.";
 });

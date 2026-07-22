@@ -13,7 +13,7 @@ BBTSL is not affiliated with:
 
 ## Content Use
 
-This repository and website exist to publish community-tracked value data and supporting reference material for Blade Ball items.
+This repository and website exist to publish community-tracked item data and supporting reference material for Blade Ball items.
 
 Item names, artwork references, descriptions, and related identifiers are used for indexing, cataloging, and community reference purposes only.
 Public team information shown on the website is limited to the project roles and profile details intentionally published through the site.
@@ -26,7 +26,7 @@ Values, counts, demand notes, descriptions, and availability information may cha
 
 ## Website Terms And Privacy
 
-The live [Terms of Service](https://bbtsl.lol/terms) govern use of the website and public API. The live [Privacy Policy](https://bbtsl.lol/privacy) explains how the website handles personal data. Those pages control if they conflict with this repository notice.
+The live [Terms of Service](https://bbtsl.lol/terms) govern use of the website and private integration API. The live [Privacy Policy](https://bbtsl.lol/privacy) explains how the website handles personal data. Those pages control if they conflict with this repository notice.
 
 Repository documentation is informational only and does not override the live website terms, privacy policy, or any rights request handled by the project owners.
 

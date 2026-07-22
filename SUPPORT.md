@@ -4,7 +4,7 @@
 
 - Use GitHub issue forms for public bugs, feature requests, and item-data corrections.
 - Email [bbtsl@pve.bio](mailto:bbtsl@pve.bio) for security, rights, sensitive account, or team-role access concerns.
-- Use the live website routes and public API paths when reporting a deployed issue so maintainers can reproduce the right surface quickly.
+- Use the live website routes or the private integration API route you tested when reporting a deployed issue so maintainers can reproduce the right surface quickly.
 
 ## Include useful detail
 

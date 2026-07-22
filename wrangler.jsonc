@@ -6,7 +6,28 @@
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
-    "run_worker_first": true
+    "run_worker_first": [
+      "/",
+      "/index.html",
+      "/team",
+      "/team/",
+      "/team.html",
+      "/privacy",
+      "/privacy/",
+      "/privacy.html",
+      "/terms",
+      "/terms/",
+      "/terms.html",
+      "/robots.txt",
+      "/bots.txt",
+      "/llms.txt",
+      "/llm.txt",
+      "/llms-full.txt",
+      "/sitemap.xml",
+      "/api/*",
+      "/images/*",
+      "/media/*"
+    ]
   },
   "observability": {
     "enabled": true
@@ -24,8 +45,14 @@
       "database_id": "8526c5b5-390b-47e0-b462-7059e1c52209"
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA_BUCKET",
+      "bucket_name": "bbtsl-media"
+    }
+  ],
   "vars": {
-    "SITE_NAME": "BBTSL Blade Ball Value List",
+    "SITE_NAME": "BBTSL Blade Ball Top Spender List",
     "PUBLIC_SITE_URL": "https://bbtsl.lol",
     "DISCORD_REDIRECT_URI": "https://bbtsl.lol/api/auth/callback"
   }

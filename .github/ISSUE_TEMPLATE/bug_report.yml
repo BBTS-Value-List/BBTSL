@@ -33,7 +33,7 @@ body:
     id: url
     attributes:
       label: Affected URL or route
-      placeholder: https://bbtsl.lol/ or /api/swords
+      placeholder: https://bbtsl.lol/, /team, or /api/v1/health
     validations:
       required: true
   - type: input

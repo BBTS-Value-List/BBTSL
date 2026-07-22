@@ -1,11 +1,11 @@
 {
-  "name": "BBTSL Blade Ball Value List",
+  "name": "BBTSL Blade Ball Top Spender List",
   "short_name": "BBTSL",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#12151a",
   "theme_color": "#12151a",
-  "description": "Tracked Blade Ball sword values for rare items.",
+  "description": "Track and search Blade Ball Top Spender Items in one place.",
   "icons": [
     {
       "src": "/og-image.png",

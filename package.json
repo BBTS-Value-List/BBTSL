@@ -7,9 +7,10 @@
     "cf:dev": "wrangler dev",
     "cf:deploy": "wrangler deploy",
     "secrets:generate": "node scripts/generate-secret-token.mjs",
+    "api:v1-key": "node scripts/v1-api-key.mjs",
     "check": "node --check src/worker.js && node --check public/app.js && node --check public/team.js"
   },
   "devDependencies": {
-    "wrangler": "^4.111.0"
+    "wrangler": "^4.113.0"
   }
 }
